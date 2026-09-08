@@ -1,0 +1,743 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta http-equiv="Cache-Control" content="no-store" />
+  <title>위험 구간 제보</title>
+
+  <style>
+    * {
+      box-sizing: border-box;
+    }
+
+    html, body {
+      margin: 0;
+      width: 100%;
+      height: 100%;
+      font-family: Arial, sans-serif;
+      background: #111;
+    }
+
+    .report-layout {
+      position: relative;
+      width: 100%;
+      height: 100vh;
+      height: 100dvh;
+      overflow: hidden;
+      background: #fff;
+    }
+
+    #reportMap {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+    }
+
+    .report-panel {
+      position: absolute;
+      left: 14px;
+      bottom: 86px;
+      width: 366px;
+      max-width: calc(100% - 28px);
+      height: 410px;
+      max-height: calc(100vh - 180px);
+      max-height: calc(100dvh - 180px);
+      background: #fff;
+      border-radius: 22px;
+      padding: 12px 16px 14px;
+      overflow-y: auto;
+      z-index: 20;
+      box-shadow: 0 10px 24px rgba(0, 0, 0, 0.16);
+
+      scrollbar-width: none;       /* 파이어폭스 */
+      -ms-overflow-style: none;    /* IE */
+    }
+
+    .report-panel::-webkit-scrollbar {
+      display: none;               /* 크롬, 사파리 */
+    }
+
+    .report-header {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 16px;
+      padding-top: 12px;
+    }
+
+    .report-panel::before {
+      content: "";
+      position: absolute;
+      top: 12px;
+      left: 50%;
+      width: 38px;
+      height: 3px;
+      border-radius: 999px;
+      background: #cfcfcf;
+      transform: translateX(-50%);
+    }
+
+    .back-btn {
+      border: none;
+      background: transparent;
+      font-size: 24px;
+      line-height: 1;
+      cursor: pointer;
+      color: #555;
+    }
+
+    .report-title {
+      font-size: 18px;
+      line-height: 1.25;
+      font-weight: 700;
+      color: #222;
+    }
+
+    .section-label {
+      display: block;
+      font-size: 13px;
+      color: #555;
+      margin-bottom: 9px;
+      font-weight: 600;
+    }
+
+    .chip-group {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-bottom: 16px;
+    }
+
+    .chip,
+    .access-chip {
+      border: 1px solid #ddd;
+      background: #fff;
+      border-radius: 18px;
+      padding: 8px 11px;
+      font-size: 12px;
+      color: #333;
+      cursor: pointer;
+      box-shadow: 0 2px 6px rgba(0, 0, 0, 0.06);
+      transition: 0.15s;
+    }
+
+    .chip.active,
+    .access-chip.active {
+      background: #f1f1f1;
+      border-color: #bbb;
+    }
+
+    .access-chip[data-accessibility="accessible"].active {
+      color: #168b28;
+      border-color: #49d000;
+    }
+
+    .access-chip[data-accessibility="not_accessible"].active {
+      color: #c53b3b;
+      border-color: #ee6b6b;
+    }
+
+    .field-box {
+      width: 100%;
+      border: 1px solid #e2e2e2;
+      border-radius: 14px;
+      background: #fff;
+      padding: 12px 14px;
+      font-size: 13px;
+      color: #333;
+      margin-bottom: 15px;
+      outline: none;
+    }
+
+    .slider-wrap {
+      margin-bottom: 16px;
+    }
+
+    .slider {
+      width: 100%;
+      accent-color: #ee6b6b;
+      cursor: pointer;
+    }
+
+    .slider-value {
+      text-align: center;
+      color: #ee6b6b;
+      font-size: 14px;
+      font-weight: 700;
+      margin-top: 5px;
+    }
+
+    textarea.field-box {
+      min-height: 86px;
+      resize: none;
+      line-height: 1.5;
+    }
+
+    .upload-box {
+      height: 88px;
+      border: 1px solid #e2e2e2;
+      border-radius: 14px;
+      background: #fff;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: #888;
+      font-size: 13px;
+      margin-bottom: 16px;
+      cursor: pointer;
+      text-align: center;
+      padding: 16px;
+    }
+
+    .upload-box input {
+      display: none;
+    }
+
+    .submit-btn {
+      width: 100%;
+      border: none;
+      border-radius: 14px;
+      background: #49d000;
+      color: #fff;
+      font-size: 16px;
+      font-weight: 700;
+      padding: 13px;
+      cursor: pointer;
+    }
+
+    .submit-btn:hover {
+      opacity: 0.95;
+    }
+
+    .submit-btn:disabled {
+      cursor: wait;
+      opacity: 0.7;
+    }
+
+    .map-control-buttons {
+      position: fixed;
+      top: 132px;
+      right: 16px;
+      z-index: 35;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .map-control-btn {
+      width: 44px;
+      height: 44px;
+      border: none;
+      border-radius: 50%;
+      background: #fff;
+      font-size: 20px;
+      cursor: pointer;
+      box-shadow: 0 4px 10px rgba(0, 0, 0, 0.18);
+    }
+
+    .bottom-nav {
+      position: fixed;
+      top: min(312px, calc(100vh - 244px));
+      right: 16px;
+      bottom: auto;
+      width: 44px;
+      height: auto;
+      padding: 6px 0;
+      border: none;
+      border-radius: 22px;
+      background: #fff;
+      box-shadow: 0 4px 10px rgba(0, 0, 0, 0.18);
+      z-index: 40;
+      display: flex;
+      flex-direction: column;
+      justify-content: flex-start;
+      align-items: center;
+      gap: 2px;
+      transform: none;
+    }
+
+    .nav-item {
+      width: 40px;
+      height: 42px;
+      border: none;
+      background: transparent;
+      color: #2f2f2f;
+      cursor: pointer;
+      display: grid;
+      place-items: center;
+      padding: 0;
+    }
+
+    .nav-item svg {
+      width: 23px;
+      height: 23px;
+      fill: none;
+      stroke: currentColor;
+      stroke-width: 1.8;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+    }
+
+    .filter-panel {
+      position: absolute;
+      inset: 0;
+      z-index: 80;
+      overflow: hidden;
+      background: rgba(0, 0, 0, 0.18);
+    }
+
+    .filter-panel.hidden {
+      display: none;
+    }
+
+    .filter-sheet {
+      position: absolute;
+      top: 10px;
+      right: 8px;
+      bottom: 10px;
+      width: calc(100% - 110px);
+      max-width: 560px;
+      min-width: 250px;
+      background: #fff;
+      border-radius: 0 24px 24px 0;
+      padding: 26px 22px;
+      box-shadow: -8px 0 24px rgba(0, 0, 0, 0.12);
+    }
+
+    .filter-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 34px;
+    }
+
+    .filter-header h2 {
+      margin: 0;
+      font-size: 20px;
+      font-weight: 500;
+      color: #111;
+    }
+
+    .filter-close-btn {
+      width: 34px;
+      height: 34px;
+      border: none;
+      background: transparent;
+      color: #444;
+      font-size: 34px;
+      line-height: 1;
+      cursor: pointer;
+    }
+
+    .filter-options {
+      display: flex;
+      flex-direction: column;
+      gap: 22px;
+    }
+
+    .filter-option {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      font-size: 16px;
+      color: #111;
+      cursor: pointer;
+    }
+
+    .filter-option input {
+      display: none;
+    }
+
+    .toggle-ui {
+      position: relative;
+      flex: 0 0 auto;
+      width: 38px;
+      height: 20px;
+      border-radius: 999px;
+      background: #d9d9d9;
+    }
+
+    .toggle-ui::before {
+      content: "";
+      position: absolute;
+      top: 1px;
+      left: 1px;
+      width: 18px;
+      height: 18px;
+      border-radius: 50%;
+      background: #fff;
+      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.18);
+      transition: transform 0.18s ease;
+    }
+
+    .filter-option input:checked + .toggle-ui {
+      background: #49d000;
+    }
+
+    .filter-option input:checked + .toggle-ui::before {
+      transform: translateX(18px);
+    }
+
+    @media (max-width: 768px) {
+      .report-panel {
+        left: 14px;
+        right: auto;
+        bottom: 86px;
+        width: 366px;
+        max-width: calc(100% - 28px);
+        max-height: calc(100vh - 180px);
+        max-height: calc(100dvh - 180px);
+        border-radius: 22px;
+        box-shadow: 0 10px 24px rgba(0, 0, 0, 0.16);
+      }
+
+      .map-control-buttons {
+        display: none;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="report-layout">
+    <div id="reportMap"></div>
+
+    <div class="report-panel">
+      <div class="report-header">
+        <button class="back-btn" onclick="history.back()">←</button>
+        <div class="report-title">위험 구간 제보</div>
+      </div>
+
+      <label class="section-label">제보 유형</label>
+      <div class="chip-group" id="typeChips">
+        <button type="button" class="chip active" data-type="급경사">급경사</button>
+        <button type="button" class="chip" data-type="파손 보도">파손 보도</button>
+        <button type="button" class="chip" data-type="단차">단차</button>
+        <button type="button" class="chip" data-type="미끄러운 노면">미끄러운 노면</button>
+        <button type="button" class="chip" data-type="공사 통제">공사 통제</button>
+        <button type="button" class="chip" data-type="기타">기타</button>
+      </div>
+
+      <label class="section-label">휠체어 진입 정보</label>
+      <div class="chip-group" id="accessibilityChips">
+        <button type="button" class="access-chip active" data-accessibility="unknown">확인 필요</button>
+        <button type="button" class="access-chip" data-accessibility="accessible">진입 가능</button>
+        <button type="button" class="access-chip" data-accessibility="not_accessible">진입 어려움</button>
+      </div>
+
+      <label class="section-label" for="reportLocation">위치</label>
+      <input
+        type="text"
+        id="reportLocation"
+        class="field-box"
+        placeholder="위치가 여기에 표시됩니다."
+      />
+
+      <div class="slider-wrap">
+        <label class="section-label" for="slopeRange">경사도 추정(선택)</label>
+        <input type="range" min="0" max="100" value="10" class="slider" id="slopeRange" />
+        <div class="slider-value" id="slopeValue">10%</div>
+      </div>
+
+      <label class="section-label" for="reportDetail">상세 설명</label>
+      <textarea
+        id="reportDetail"
+        class="field-box"
+        placeholder="어떤 위험이 있었나요? 자세하게 작성해 주시면 큰 도움이 됩니다."
+      ></textarea>
+
+      <label class="section-label">사진 첨부</label>
+      <label class="upload-box" for="reportImage">
+        📷 사진 촬영 또는 앨범에서 선택
+        <input type="file" id="reportImage" accept="image/*" capture="environment" />
+      </label>
+
+      <button class="submit-btn" id="submitReportBtn">제보하기</button>
+    </div>
+
+    <div class="map-control-buttons">
+      <button id="reportFavoriteBtn" class="map-control-btn" type="button">⭐</button>
+      <button id="reportFilterBtn" class="map-control-btn" type="button">⚙️</button>
+      <button id="reportCurrentLocationBtn" class="map-control-btn" type="button">📍</button>
+    </div>
+
+    <div id="reportFilterPanel" class="filter-panel hidden">
+      <aside class="filter-sheet">
+        <div class="filter-header">
+          <h2>옵션 필터</h2>
+          <button type="button" id="closeReportFilterBtn" class="filter-close-btn">×</button>
+        </div>
+
+        <div class="filter-options">
+          <label class="filter-option">
+            <span>장애인 화장실</span>
+            <input type="checkbox" />
+            <span class="toggle-ui"></span>
+          </label>
+          <label class="filter-option">
+            <span>배리어프리 매장</span>
+            <input type="checkbox" />
+            <span class="toggle-ui"></span>
+          </label>
+          <label class="filter-option">
+            <span>엘리베이터</span>
+            <input type="checkbox" />
+            <span class="toggle-ui"></span>
+          </label>
+          <label class="filter-option">
+            <span>장애인 전용 주차장</span>
+            <input type="checkbox" />
+            <span class="toggle-ui"></span>
+          </label>
+          <label class="filter-option">
+            <span>버스 정류장</span>
+            <input type="checkbox" />
+            <span class="toggle-ui"></span>
+          </label>
+        </div>
+      </aside>
+    </div>
+
+    <nav class="bottom-nav" aria-label="하단 내비게이션">
+      <button class="nav-item active" type="button" id="reportHomeNavBtn" aria-label="홈">
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M3 11.5 12 4l9 7.5" />
+          <path d="M5.5 10.5V21h13V10.5" />
+        </svg>
+      </button>
+      <button class="nav-item" type="button" id="reportNearbyNavBtn" aria-label="주변 장소">
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M12 21s6-5.3 6-11a6 6 0 0 0-12 0c0 5.7 6 11 6 11Z" />
+          <circle cx="12" cy="10" r="2.5" />
+        </svg>
+      </button>
+      <button class="nav-item" type="button" aria-label="위험 구간 제보">
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M4 8h4l1.5-2h5L16 8h4v11H4Z" />
+          <circle cx="12" cy="13.5" r="3.5" />
+        </svg>
+      </button>
+      <button class="nav-item" type="button" id="reportBookmarkNavBtn" aria-label="즐겨찾기">
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M6 4h12v17l-6-3.5L6 21Z" />
+        </svg>
+      </button>
+      <button class="nav-item" type="button" id="reportLoginNavBtn" aria-label="마이 페이지">
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <circle cx="12" cy="8" r="4" />
+          <path d="M4.5 21a7.5 7.5 0 0 1 15 0" />
+        </svg>
+      </button>
+    </nav>
+  </div>
+
+  <script src="https://dapi.kakao.com/v2/maps/sdk.js?appkey=__KAKAO_KEY__&libraries=services"></script>
+  <script>
+    const params = new URLSearchParams(location.search);
+
+    const hasSelectedPlace = params.has("x") && params.has("y");
+    const placeName = params.get("name") || "";
+    const address = params.get("address") || "";
+    const x = Number(params.get("x")) || 127.03811;
+    const y = Number(params.get("y")) || 37.56184;
+
+    const reportLocation = document.getElementById("reportLocation");
+    const slopeRange = document.getElementById("slopeRange");
+    const slopeValue = document.getElementById("slopeValue");
+    const typeChips = document.querySelectorAll(".chip");
+    const accessibilityChips = document.querySelectorAll(".access-chip");
+    const reportImage = document.getElementById("reportImage");
+    const submitReportBtn = document.getElementById("submitReportBtn");
+
+    reportLocation.value = address;
+
+    slopeRange.addEventListener("input", () => {
+      slopeValue.textContent = `${slopeRange.value}%`;
+    });
+
+    typeChips.forEach((chip) => {
+      chip.addEventListener("click", () => {
+        typeChips.forEach((c) => c.classList.remove("active"));
+        chip.classList.add("active");
+      });
+    });
+
+    accessibilityChips.forEach((chip) => {
+      chip.addEventListener("click", () => {
+        accessibilityChips.forEach((c) => c.classList.remove("active"));
+        chip.classList.add("active");
+      });
+    });
+
+    reportImage.addEventListener("change", () => {
+      const uploadBox = document.querySelector(".upload-box");
+      if (reportImage.files.length > 0) {
+        uploadBox.childNodes[0].nodeValue = `📷 ${reportImage.files[0].name}`;
+      }
+    });
+
+    const map = new kakao.maps.Map(document.getElementById("reportMap"), {
+      center: new kakao.maps.LatLng(y, x),
+      level: 3
+    });
+
+    let marker = null;
+
+    if (hasSelectedPlace) {
+      marker = new kakao.maps.Marker({
+        map,
+        position: new kakao.maps.LatLng(y, x)
+      });
+
+      if (placeName) {
+        const infowindow = new kakao.maps.InfoWindow({
+          content: `<div style="padding:8px 12px; font-size:13px;">${placeName}</div>`
+        });
+
+        infowindow.open(map, marker);
+      }
+    } else {
+      moveReportMapToCurrentLocation();
+    }
+
+    document.getElementById("reportFavoriteBtn").addEventListener("click", () => {
+      location.href = indexUrlWithMap("favorites");
+    });
+
+    document.getElementById("reportFilterBtn").addEventListener("click", () => {
+      document.getElementById("reportFilterPanel").classList.remove("hidden");
+    });
+
+    document.getElementById("closeReportFilterBtn").addEventListener("click", () => {
+      document.getElementById("reportFilterPanel").classList.add("hidden");
+    });
+
+    document.getElementById("reportFilterPanel").addEventListener("click", (event) => {
+      if (event.target.id === "reportFilterPanel") {
+        event.currentTarget.classList.add("hidden");
+      }
+    });
+
+    document.getElementById("reportCurrentLocationBtn").addEventListener("click", () => {
+      moveReportMapToCurrentLocation();
+    });
+
+    function moveReportMapToCurrentLocation() {
+      if (!navigator.geolocation) {
+        alert("현재 위치 기능을 지원하지 않는 브라우저입니다.");
+        return;
+      }
+
+      navigator.geolocation.getCurrentPosition(
+        (position) => {
+          const currentPosition = new kakao.maps.LatLng(
+            position.coords.latitude,
+            position.coords.longitude
+          );
+          map.setCenter(currentPosition);
+
+          if (!marker) {
+            marker = new kakao.maps.Marker({
+              map,
+              position: currentPosition
+            });
+          } else {
+            marker.setPosition(currentPosition);
+          }
+        },
+        () => {
+          alert("현재 위치를 가져올 수 없습니다. 위치 권한을 허용해주세요.");
+        }
+      );
+    }
+
+    document.getElementById("reportHomeNavBtn").addEventListener("click", () => {
+      location.href = indexUrlWithMap();
+    });
+
+    document.getElementById("reportNearbyNavBtn").addEventListener("click", () => {
+      location.href = indexUrlWithMap();
+    });
+
+    document.getElementById("reportBookmarkNavBtn").addEventListener("click", () => {
+      location.href = indexUrlWithMap("favorites");
+    });
+
+    document.getElementById("reportLoginNavBtn").addEventListener("click", () => {
+      location.href = "mypage.html";
+    });
+
+    submitReportBtn.addEventListener("click", async () => {
+      const selectedType = document.querySelector(".chip.active")?.dataset.type || "";
+      const wheelchairAccess =
+        document.querySelector(".access-chip.active")?.dataset.accessibility || "unknown";
+      const imageData = reportImage.files[0]
+        ? await readFileAsDataURL(reportImage.files[0])
+        : "";
+      const reportData = {
+        placeName: placeName || reportLocation.value,
+        address: reportLocation.value,
+        x,
+        y,
+        type: selectedType,
+        slope: slopeRange.value,
+        wheelchairAccess,
+        detail: document.getElementById("reportDetail").value,
+        imageData
+      };
+
+      submitReportBtn.disabled = true;
+      submitReportBtn.textContent = "등록 중...";
+
+      try {
+        const response = await fetch("/api/accessibility-reports", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify(reportData)
+        });
+        const data = await response.json();
+
+        if (!response.ok || !data.ok) {
+          throw new Error(data.error || "제보 등록에 실패했습니다.");
+        }
+
+        alert("제보가 등록되었습니다. 관리자가 확인하면 장소 정보에 반영됩니다.");
+        location.href = indexUrlWithMap();
+      } catch (error) {
+        alert(error.message);
+      } finally {
+        submitReportBtn.disabled = false;
+        submitReportBtn.textContent = "제보하기";
+      }
+    });
+
+    function readFileAsDataURL(file) {
+      return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result);
+        reader.onerror = () => reject(new Error("사진을 읽을 수 없습니다."));
+        reader.readAsDataURL(file);
+      });
+    }
+
+    function indexUrlWithMap(panel) {
+      const center = map.getCenter();
+      const nextParams = new URLSearchParams({
+        mapX: center.getLng(),
+        mapY: center.getLat(),
+        mapLevel: map.getLevel()
+      });
+
+      if (panel) {
+        nextParams.set("panel", panel);
+      }
+
+      return `index.html?${nextParams.toString()}`;
+    }
+  </script>
+</body>
+</html>

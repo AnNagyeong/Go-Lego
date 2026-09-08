@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>경로 목록</title>
+  <link rel="stylesheet" href="style.css" />
+  <style>
+    body { background: #fff; }
+    .route-list-page { min-height: 100vh; background: #fff; color: #222; padding: 0 28px 28px; }
+    .route-list-header { height: 64px; display: flex; align-items: center; gap: 2px; border-bottom: 1px solid #dadada; }
+    .route-list-back { width: 40px; height: 40px; border: 0; background: transparent; color: #222; font-size: 28px; cursor: pointer; }
+    .route-list-header h1 { margin: 0; font-size: 20px; font-weight: 700; }
+    .route-list-summary { margin: 18px 0 12px; font-size: 13px; font-weight: 700; }
+    .route-options { display: grid; gap: 10px; max-width: 720px; }
+    .route-option {
+      display: grid; grid-template-columns: 6px 1fr; gap: 12px; align-items: center;
+      min-height: 76px; border: 1px solid #e0e0e0; border-radius: 8px; background: #fff; padding: 14px;
+      text-align: left; cursor: pointer;
+    }
+    .route-option.selected { border-color: #49d11a; box-shadow: 0 0 0 2px rgba(73, 209, 26, 0.14); }
+    .route-option-bar { width: 6px; height: 48px; background: #49d11a; }
+    .route-option.danger .route-option-bar { background: #f26a6a; }
+    .route-option h2 { margin: 0 0 6px; font-size: 14px; }
+    .route-option p { margin: 0; color: #777; font-size: 12px; line-height: 1.45; }
+    @media (min-width: 1024px) {
+      .route-list-page { width: min(1120px, calc(100vw - 96px)); margin: 0 auto; padding-top: 28px; }
+    }
+  </style>
+</head>
+<body>
+  <main class="route-list-page">
+    <header class="route-list-header">
+      <button class="route-list-back" type="button" aria-label="뒤로가기" onclick="history.back()">‹</button>
+      <h1>경로 목록</h1>
+    </header>
+
+    <p class="route-list-summary" id="routeSummary">경로를 불러오는 중...</p>
+    <section class="route-options" id="routeOptions" aria-label="추천 경로"></section>
+  </main>
+
+  <script>
+    const params = new URLSearchParams(location.search);
+    const routeOptions = document.getElementById("routeOptions");
+    const routeSummary = document.getElementById("routeSummary");
+
+    loadRoutes();
+
+    async function loadRoutes() {
+      try {
+        const response = await fetch(`/api/access-routes?${params.toString()}`);
+        const data = await response.json();
+
+        if (!response.ok || !data.ok) {
+          throw new Error(data.error || "경로를 불러오지 못했습니다.");
+        }
+
+        routeSummary.textContent = `${data.destination.name}까지 추천 경로 ${data.routes.length}개`;
+        renderRoutes(data.routes);
+      } catch (error) {
+        routeSummary.textContent = error.message;
+      }
+    }
+
+    function renderRoutes(routes) {
+      routeOptions.innerHTML = "";
+
+      routes.forEach((route) => {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = `route-option ${route.dangerCount ? "danger" : ""}`;
+        button.dataset.routeId = route.id;
+        button.innerHTML = `
+          <div class="route-option-bar" aria-hidden="true"></div>
+          <div>
+            <h2>${route.title}</h2>
+            <p>${route.duration}분 · ${route.distance}m · 계단 ${route.features.stairs}개 · 경사로 ${route.features.ramps}개 · 횡단보도 ${route.features.crosswalks}개</p>
+          </div>
+        `;
+
+        button.addEventListener("click", () => {
+          params.set("routeType", route.id);
+          location.href = `index.html?${params.toString()}`;
+        });
+
+        routeOptions.appendChild(button);
+      });
+    }
+  </script>
+</body>
+</html>

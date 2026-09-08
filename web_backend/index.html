@@ -1,0 +1,291 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AccessNav Web</title>
+  <link rel="stylesheet" href="style.css?v=20260908-gps-simulator" />
+</head>
+<body>
+  <div class="phone">
+    <div id="map"></div>
+
+    <!-- 검색창 -->
+    <div class="search-bar">
+      <button class="icon-btn" id="backBtn">←</button>
+      <input
+        type="text"
+        id="searchInput"
+        placeholder="장소를 검색하세요"
+      />
+      <button class="icon-btn" id="searchBtn">⌕</button>
+    </div>
+
+    <section class="quick-route-panel" aria-label="출발지와 목적지 직접 입력">
+      <button class="route-planner-back" id="routePlannerBackBtn" type="button" aria-label="길찾기 닫기">←</button>
+      <div class="quick-route-fields">
+        <input type="text" id="quickStartInput" placeholder="출발지 입력" autocomplete="off" />
+        <input type="text" id="quickEndInput" placeholder="도착지 입력" autocomplete="off" />
+        <button class="quick-swap-btn" id="quickSwapRouteBtn" type="button" aria-label="출발지와 도착지 바꾸기">⇅</button>
+      </div>
+      <div class="quick-route-actions">
+        <button class="quick-reset-btn" id="quickRouteResetBtn" type="button">↻ 다시입력</button>
+        <button class="quick-find-btn" id="quickRouteFindBtn" type="button">길찾기 ›</button>
+      </div>
+    </section>
+
+    <div id="quickRouteResultList" class="result-list quick-route-result-list hidden"></div>
+
+    <!-- 카테고리 칩 -->
+    <div class="chips">
+      <button class="chip" data-keyword="택시 정류장">🚕 택시 정류장</button>
+      <button class="chip" data-keyword="편의점">🏪 편의점</button>
+      <button class="chip" data-keyword="카페">☕ 카페</button>
+      <button class="chip" data-keyword="음식점">🍽 음식점</button>
+      <button class="chip" data-keyword="병원">🏥 병원</button>
+      <span class="chip-line-break" aria-hidden="true"></span>
+      <button class="chip" data-keyword="편의시설">♿ 편의시설</button>
+    </div>
+
+    <div id="weatherBadge" class="weather-badge hidden" aria-live="polite">
+      <span class="weather-icon" aria-hidden="true"></span>
+      <div>
+        <strong id="weatherTemp">--°</strong>
+        <span id="weatherSummary"></span>
+      </div>
+    </div>
+
+    <!-- 검색 결과 -->
+    <div id="resultList" class="result-list hidden"></div>
+    
+    <!-- 필터링 UI, 즐겨찾기, 현재 위치 가져오는 기능 -->
+    <div class="map-control-buttons">
+    <button id="socialHelpBtn" class="map-control-btn emergency-help-btn" type="button" aria-label="긴급 도움 요청">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M1 21h22L12 2 1 21Zm12-3h-2v2h2v-2Zm0-2h-2v-4h2v4Z" /></svg>
+    </button>
+    <button id="favoriteBtn" class="map-control-btn" type="button" aria-label="즐겨찾기">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m12 17.27-5.18 3.13 1.37-5.89-4.57-3.96 6.03-.52L12 4.48l2.35 5.55 6.03.52-4.57 3.96 1.37 5.89L12 17.27Z" /></svg>
+    </button>
+    <button id="filterBtn" class="map-control-btn" type="button" aria-label="설정 및 필터">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 17v2h6v-2H3ZM3 5v2h10V5H3Zm10 16v-2h8v-2h-8v-2h-2v6h2ZM7 9v2H3v2h4v2h2V9H7Zm14 4v-2H11v2h10Zm-6-4h2V7h4V5h-4V3h-2v6Z" /></svg>
+    </button>
+    <button id="currentLocationBtn" class="map-control-btn" type="button" aria-label="현재 위치">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20.94 11A9 9 0 0 0 13 3.06V1h-2v2.06A9 9 0 0 0 3.06 11H1v2h2.06A9 9 0 0 0 11 20.94V23h2v-2.06A9 9 0 0 0 20.94 13H23v-2h-2.06ZM12 19a7 7 0 1 1 0-14 7 7 0 0 1 0 14Zm0-11a4 4 0 1 0 0 8 4 4 0 0 0 0-8Z" /></svg>
+    </button>
+    </div>
+
+    <section id="socialHelpPanel" class="social-help-panel hidden" aria-label="소셜 헬프 긴급 매칭">
+      <div class="social-help-card">
+        <button id="closeSocialHelpBtn" class="social-help-close" type="button" aria-label="닫기">×</button>
+        <span class="social-help-icon" aria-hidden="true">🚨</span>
+        <h2>긴급 도움 요청</h2>
+        <p>이동이 어려운 구간에서 주변 사용자와 봉사자에게 도움을 요청합니다.</p>
+        <div class="social-help-location" id="socialHelpLocation">현재 위치 확인 중</div>
+        <div class="social-help-status" id="socialHelpStatus">대기 중</div>
+        <button id="requestSocialHelpBtn" class="social-help-primary" type="button">주변에 도움 요청하기</button>
+      </div>
+    </section>
+
+    <section id="volunteerRequestPanel" class="volunteer-request-panel hidden" aria-label="봉사자 지원 요청 알림">
+      <div class="volunteer-request-card">
+        <div class="volunteer-request-header">
+          <div>
+            <p>지원 요청</p>
+            <h2>근처에 도움이 필요합니다</h2>
+          </div>
+          <span aria-hidden="true">🚨</span>
+        </div>
+
+        <div class="volunteer-request-map" id="volunteerRequestMap">
+          <span class="volunteer-map-fallback">지도 불러오는 중</span>
+        </div>
+
+        <div class="volunteer-request-info">
+          <div>
+            <span>신청자</span>
+            <strong id="volunteerRequesterName">심청자</strong>
+          </div>
+          <div>
+            <span>성별</span>
+            <strong id="volunteerRequesterGender">남성</strong>
+          </div>
+          <div>
+            <span>나이</span>
+            <strong id="volunteerRequesterAge">60대</strong>
+          </div>
+          <div>
+            <span>위치</span>
+            <strong id="volunteerRequesterLocation">요청 위치 확인 중</strong>
+          </div>
+        </div>
+
+        <p class="volunteer-request-radius">반경 500m 안의 로그인 사용자에게 전송됩니다.</p>
+
+        <div class="volunteer-request-actions">
+          <button id="acceptVolunteerRequestBtn" class="volunteer-accept-btn" type="button">수락</button>
+          <button id="declineVolunteerRequestBtn" class="volunteer-decline-btn" type="button">불가</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- 필터 패널 -->
+    <div id="filterPanel" class="filter-panel hidden">
+  <div class="filter-map-preview"></div>
+
+  <aside class="filter-sheet">
+    <div class="filter-header">
+      <h2>옵션 필터</h2>
+      <button type="button" id="closeFilterBtn" class="filter-close-btn">×</button>
+    </div>
+
+    <div class="filter-options">
+      <label class="filter-option">
+        <span>장애인 화장실</span>
+        <input type="checkbox" data-filter="disabled_toilet" />
+        <span class="toggle-ui"></span>
+      </label>
+
+      <label class="filter-option">
+        <span>배리어프리 매장</span>
+        <input type="checkbox" data-filter="barrier_free_kiosk" />
+        <span class="toggle-ui"></span>
+      </label>
+
+      <label class="filter-option">
+        <span>엘리베이터</span>
+        <input type="checkbox" data-filter="elevator" />
+        <span class="toggle-ui"></span>
+      </label>
+
+      <label class="filter-option">
+        <span>장애인 전용 주차장</span>
+        <input type="checkbox" data-filter="disabled_parking" />
+        <span class="toggle-ui"></span>
+      </label>
+
+      <label class="filter-option">
+        <span>버스 정류장</span>
+        <input type="checkbox" data-filter="bus_stop" />
+        <span class="toggle-ui"></span>
+      </label>
+    </div>
+  </aside>
+</div>
+
+    <!-- 하단 장소 시트 -->
+    <div id="placeSheet" class="bottom-sheet expanded hidden">
+  <div class="sheet-handle" id="sheetHandle"></div>
+
+  <div class="sheet-content" id="panelContent">
+    <p class="sheet-label">선택한 목적지</p>
+    <h3 id="placeName">장소명</h3>
+    <p id="placeAddress" class="muted">주소가 여기에 표시됩니다.</p>
+
+    <div class="info-cards">
+      <div class="info-card">
+        <strong>3분</strong>
+        <span>예상 시간</span>
+      </div>
+      <div class="info-card">
+        <strong>100m</strong>
+        <span>거리</span>
+      </div>
+      <div class="info-card danger">
+        <strong>2곳</strong>
+        <span>위험 구간</span>
+      </div>
+    </div>
+
+    <div class="safety-bar">
+      <div class="safe"></div>
+      <div class="warn"></div>
+    </div>
+
+    <div class="safety-labels">
+      <span>안전 20%</span>
+      <span>주의 80%</span>
+    </div>
+
+    <div class="sheet-actions">
+      <button class="secondary-btn" id="routeListBtn">경로 목록</button>
+      <button class="primary-btn" id="startRouteBtn">안내 시작</button>
+    </div>
+    <button class="secondary-btn dev-simulation-btn" id="simulateRouteBtn" type="button">경로 테스트</button>
+
+  </div>
+</div>
+
+    <section id="favoritesPanel" class="favorites-screen favorites-panel hidden" aria-label="즐겨찾기">
+      <header class="favorites-header">
+        <button class="favorites-back-button" id="closeFavoritesPanelBtn" type="button" aria-label="닫기">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M15 5 8 12l7 7" />
+          </svg>
+        </button>
+        <div>
+          <h1>즐겨찾기</h1>
+          <p>자주 찾는 장소 그룹을 관리하세요.</p>
+        </div>
+        <button class="favorites-edit-button" id="favoriteEditBtn" type="button">편집</button>
+      </header>
+
+      <section class="favorites-overview" aria-label="즐겨찾기 요약">
+        <div class="overview-item">
+          <span>그룹</span>
+          <strong id="favoriteGroupCount">3</strong>
+        </div>
+        <div class="overview-item">
+          <span>등록순</span>
+          <strong id="favoriteSortLabel">최신</strong>
+        </div>
+      </section>
+
+      <div class="favorites-content">
+        <section class="favorite-list" id="favoriteGroupList" aria-label="즐겨찾기 그룹 목록">
+        </section>
+      </div>
+
+      <button class="add-group-button" id="addFavoriteGroupBtn" type="button">
+        <span aria-hidden="true">+</span>
+        새 그룹 추가
+      </button>
+    </section>
+
+    <!-- 하단 네비 -->
+    <nav class="bottom-nav" aria-label="하단 내비게이션">
+      <button class="nav-item active" type="button" id="homeNavBtn" aria-label="홈">
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M3 11.5 12 4l9 7.5" />
+          <path d="M5.5 10.5V21h13V10.5" />
+        </svg>
+      </button>
+      <button class="nav-item" type="button" id="nearbyNavBtn" aria-label="주변 장소">
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M12 21s6-5.3 6-11a6 6 0 0 0-12 0c0 5.7 6 11 6 11Z" />
+          <circle cx="12" cy="10" r="2.5" />
+        </svg>
+      </button>
+      <button class="nav-item" type="button" id="cameraNavBtn" aria-label="위험 구간 제보">
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M4 8h4l1.5-2h5L16 8h4v11H4Z" />
+          <circle cx="12" cy="13.5" r="3.5" />
+        </svg>
+      </button>
+      <button class="nav-item" type="button" id="bookmarkNavBtn" aria-label="즐겨찾기">
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M6 4h12v17l-6-3.5L6 21Z" />
+        </svg>
+      </button>
+      <button class="nav-item" type="button" id="loginNavBtn" aria-label="마이 페이지">
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <circle cx="12" cy="8" r="4" />
+          <path d="M4.5 21a7.5 7.5 0 0 1 15 0" />
+        </svg>
+      </button>
+    </nav>
+  </div>
+
+  <script src="https://dapi.kakao.com/v2/maps/sdk.js?appkey=__KAKAO_KEY__&libraries=services"></script>
+  <script src="script.js?v=20260908-gps-simulator"></script>
+</body>
+</html>

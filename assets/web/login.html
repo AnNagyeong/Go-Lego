@@ -1,0 +1,284 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AccessNav 로그인</title>
+  <link rel="stylesheet" href="style.css?v=20260830-google-auth" />
+</head>
+<body>
+  <main class="phone auth-phone">
+    <section class="auth-screen" aria-label="로그인">
+      <header class="auth-header">
+        <button class="auth-back-button" type="button" aria-label="뒤로 가기" onclick="location.href='index.html'">
+          &larr;
+        </button>
+        <div>
+          <h1>로그인</h1>
+        </div>
+      </header>
+
+      <div class="auth-tabs" role="tablist" aria-label="계정 메뉴">
+        <button class="auth-tab active" id="loginTab" type="button" role="tab" aria-selected="true">로그인</button>
+        <button class="auth-tab" id="signupTab" type="button" role="tab" aria-selected="false">회원가입</button>
+      </div>
+
+      <form class="auth-form" id="loginForm">
+        <label class="auth-field">
+          <span>이메일</span>
+          <input type="email" name="loginEmail" autocomplete="email" placeholder="이메일을 입력하세요" required />
+        </label>
+
+        <label class="auth-field">
+          <span>비밀번호</span>
+          <input type="password" name="loginPassword" autocomplete="current-password" placeholder="비밀번호를 입력하세요" required />
+        </label>
+
+        <label class="auth-check">
+          <input type="checkbox" />
+          <span>로그인 상태 유지</span>
+        </label>
+
+        <button class="auth-primary-button" type="submit">로그인</button>
+        <button class="auth-google-button" type="button" id="googleLoginBtn">
+          <svg class="google-logo" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+            <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/>
+            <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/>
+            <path fill="#FBBC05" d="M5.84 14.1c-.22-.66-.35-1.36-.35-2.1s.13-1.44.35-2.1V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l3.66-2.84z"/>
+            <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06L5.84 9.9C6.71 7.3 9.14 5.38 12 5.38z"/>
+          </svg>
+          Google 계정으로 로그인
+        </button>
+      </form>
+
+      <form class="auth-form hidden" id="signupForm">
+        <label class="auth-field">
+          <span>이메일</span>
+          <input type="email" name="signupEmail" autocomplete="email" placeholder="이메일 주소를 입력하세요" required />
+        </label>
+
+        <label class="auth-field">
+          <span>비밀번호</span>
+          <input type="password" name="signupPassword" autocomplete="new-password" placeholder="비밀번호를 입력하세요" required />
+        </label>
+
+        <label class="auth-field">
+          <span>비밀번호 확인</span>
+          <input type="password" name="signupPasswordConfirm" autocomplete="new-password" placeholder="비밀번호를 다시 입력하세요" required />
+        </label>
+
+        <label class="auth-field">
+          <span>닉네임</span>
+          <input type="text" name="nickname" autocomplete="nickname" placeholder="앱에서 사용할 이름" required />
+        </label>
+
+        <button class="auth-primary-button" type="submit">회원가입</button>
+        <button class="auth-google-button" type="button" id="googleSignupBtn">
+          <svg class="google-logo" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+            <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/>
+            <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/>
+            <path fill="#FBBC05" d="M5.84 14.1c-.22-.66-.35-1.36-.35-2.1s.13-1.44.35-2.1V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l3.66-2.84z"/>
+            <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06L5.84 9.9C6.71 7.3 9.14 5.38 12 5.38z"/>
+          </svg>
+          Google 계정으로 회원가입
+        </button>
+      </form>
+
+      <div class="auth-links">
+        <button type="button">이메일 찾기</button>
+        <span aria-hidden="true"></span>
+        <button type="button">비밀번호 찾기</button>
+      </div>
+      <p class="auth-message" id="authMessage" role="status"></p>
+    </section>
+  </main>
+
+  <script src="https://accounts.google.com/gsi/client" async defer></script>
+  <script>
+    const AUTH_API_BASES = ["", "http://localhost:8080", "http://localhost:8081"];
+    const loginTab = document.getElementById("loginTab");
+    const signupTab = document.getElementById("signupTab");
+    const loginForm = document.getElementById("loginForm");
+    const signupForm = document.getElementById("signupForm");
+    const googleLoginBtn = document.getElementById("googleLoginBtn");
+    const googleSignupBtn = document.getElementById("googleSignupBtn");
+    const authMessage = document.getElementById("authMessage");
+    let pendingGoogleMode = "login";
+    let googleTokenClient = null;
+    let googleClientId = "";
+
+    function setAuthMessage(message, isError = false) {
+      authMessage.textContent = message;
+      authMessage.classList.toggle("error", isError);
+    }
+
+    function setAuthMode(mode) {
+      const isLogin = mode === "login";
+      loginTab.classList.toggle("active", isLogin);
+      signupTab.classList.toggle("active", !isLogin);
+      loginTab.setAttribute("aria-selected", String(isLogin));
+      signupTab.setAttribute("aria-selected", String(!isLogin));
+      loginForm.classList.toggle("hidden", !isLogin);
+      signupForm.classList.toggle("hidden", isLogin);
+    }
+
+    loginTab.addEventListener("click", () => setAuthMode("login"));
+    signupTab.addEventListener("click", () => setAuthMode("signup"));
+
+    async function requestAuth(path, payload) {
+      let lastError = null;
+
+      for (const baseUrl of AUTH_API_BASES) {
+        try {
+          const response = await fetch(`${baseUrl}${path}`, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify(payload),
+          });
+          const data = await response.json();
+
+          if (!response.ok || !data.ok) {
+            throw new Error(data.error || "요청에 실패했습니다.");
+          }
+
+          return data;
+        } catch (error) {
+          lastError = error;
+        }
+      }
+
+      throw lastError || new Error("백엔드 서버에 연결할 수 없습니다.");
+    }
+
+    function saveAuth(data) {
+      localStorage.setItem("accessnavToken", data.token);
+      localStorage.setItem("accessnavUser", JSON.stringify(data.user));
+      setAuthMessage(`${data.user.nickname || data.user.email}님, 로그인되었습니다.`);
+      setTimeout(() => {
+        location.href = "index.html";
+      }, 600);
+    }
+
+    loginForm.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const formData = new FormData(loginForm);
+      setAuthMessage("로그인 중입니다...");
+
+      try {
+        const data = await requestAuth("/api/auth/login", {
+          email: formData.get("loginEmail"),
+          password: formData.get("loginPassword"),
+        });
+        saveAuth(data);
+      } catch (error) {
+        setAuthMessage(error.message, true);
+      }
+    });
+
+    signupForm.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const formData = new FormData(signupForm);
+      if (formData.get("signupPassword") !== formData.get("signupPasswordConfirm")) {
+        setAuthMessage("비밀번호가 서로 달라요.", true);
+        return;
+      }
+
+      setAuthMessage("회원가입 중입니다...");
+
+      try {
+        const data = await requestAuth("/api/auth/signup", {
+          email: formData.get("signupEmail"),
+          password: formData.get("signupPassword"),
+          nickname: formData.get("nickname"),
+          userType: "Requester",
+        });
+        saveAuth(data);
+      } catch (error) {
+        setAuthMessage(error.message, true);
+      }
+    });
+
+    async function handleGoogleAccessToken(response) {
+      if (response?.error) {
+        setAuthMessage("Google 로그인이 취소되었어요.", true);
+        return;
+      }
+
+      if (!response?.access_token) {
+        setAuthMessage("Google 계정 정보를 받지 못했어요.", true);
+        return;
+      }
+
+      setAuthMessage("Google 계정 확인 중입니다...");
+
+      try {
+        const data = await requestAuth("/api/auth/google", {
+          accessToken: response.access_token,
+          mode: pendingGoogleMode,
+          userType: "Requester",
+        });
+        saveAuth(data);
+      } catch (error) {
+        setAuthMessage(error.message, true);
+      }
+    }
+
+    async function initGoogleAuth() {
+      try {
+        let data = null;
+
+        for (const baseUrl of AUTH_API_BASES) {
+          const response = await fetch(`${baseUrl}/api/auth/google-client-id`).catch(() => null);
+          if (!response?.ok) continue;
+          data = await response.json();
+          if (data?.clientId) break;
+        }
+
+        if (!data?.clientId) {
+          googleClientId = "";
+          return;
+        }
+
+        googleClientId = data.clientId;
+        const waitForGoogle = setInterval(() => {
+          if (!window.google?.accounts?.oauth2) return;
+          clearInterval(waitForGoogle);
+          googleTokenClient = google.accounts.oauth2.initTokenClient({
+            client_id: data.clientId,
+            scope: "openid email profile",
+            callback: handleGoogleAccessToken,
+          });
+        }, 100);
+      } catch {
+        googleClientId = "";
+      }
+    }
+
+    function handleGoogleAuth(mode) {
+      pendingGoogleMode = mode;
+      if (!googleClientId) {
+        setAuthMessage("Google 로그인을 준비할 수 없습니다. 이메일 로그인 또는 회원가입을 이용해주세요.", true);
+        return;
+      }
+      if (window.AccessNavGoogle?.postMessage) {
+        setAuthMessage("휴대폰에서 Google 계정을 선택해주세요...");
+        window.AccessNavGoogle.postMessage(JSON.stringify({ mode, clientId: googleClientId }));
+        return;
+      }
+      if (!googleTokenClient) {
+        setAuthMessage("Google 로그인을 준비 중입니다. 잠시 후 다시 눌러주세요.", true);
+        return;
+      }
+      googleTokenClient.requestAccessToken({
+        prompt: mode === "signup" ? "consent" : "",
+      });
+    }
+
+    googleLoginBtn.addEventListener("click", () => handleGoogleAuth("login"));
+    googleSignupBtn.addEventListener("click", () => handleGoogleAuth("signup"));
+    initGoogleAuth();
+  </script>
+</body>
+</html>

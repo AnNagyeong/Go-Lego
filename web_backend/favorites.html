@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <script>
+    location.replace("index.html?panel=favorites");
+  </script>
+  <title>AccessNav Favorites</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <main class="phone favorites-phone">
+    <section class="favorites-screen" aria-label="즐겨찾기">
+      <header class="favorites-header">
+        <button class="favorites-back-button" type="button" aria-label="뒤로 가기" onclick="location.href='index.html'">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M15 5 8 12l7 7" />
+          </svg>
+        </button>
+        <div>
+          <h1>즐겨찾기</h1>
+          <p>자주 찾는 장소 그룹을 관리하세요.</p>
+        </div>
+        <button class="favorites-edit-button" type="button">편집</button>
+      </header>
+
+      <section class="favorites-overview" aria-label="즐겨찾기 요약">
+        <div class="overview-item">
+          <span>그룹</span>
+          <strong>3</strong>
+        </div>
+        <div class="overview-item">
+          <span>등록순</span>
+          <strong>최신</strong>
+        </div>
+      </section>
+
+      <div class="favorites-content">
+        <section class="favorite-list" aria-label="즐겨찾기 그룹 목록">
+          <article class="favorite-group">
+            <span class="favorite-star green" aria-hidden="true">★</span>
+            <div class="favorite-info">
+              <h2>기본 그룹</h2>
+              <p>6 · 나만 보기</p>
+            </div>
+            <button class="group-menu-button" type="button" aria-label="기본 그룹 메뉴">⋮</button>
+          </article>
+
+          <article class="favorite-group">
+            <span class="favorite-star purple" aria-hidden="true">★</span>
+            <div class="favorite-info">
+              <h2>냠냠</h2>
+              <p>12 · 공개</p>
+            </div>
+            <button class="group-menu-button" type="button" aria-label="냠냠 메뉴">⋮</button>
+          </article>
+
+          <article class="favorite-group">
+            <span class="favorite-star yellow" aria-hidden="true">★</span>
+            <div class="favorite-info">
+              <h2>경치 좋은 카페</h2>
+              <p>5 · 나만 보기</p>
+            </div>
+            <button class="group-menu-button" type="button" aria-label="경치 좋은 카페 메뉴">⋮</button>
+          </article>
+        </section>
+
+        <aside class="favorites-side-panel" aria-label="즐겨찾기 상세">
+          <h2>최근 즐겨찾기</h2>
+          <div class="recent-place">
+            <strong>왕십리역</strong>
+            <span>기본 그룹</span>
+          </div>
+          <div class="recent-place">
+            <strong>한양대 카페거리</strong>
+            <span>경치 좋은 카페</span>
+          </div>
+          <div class="recent-place">
+            <strong>성동구청</strong>
+            <span>기본 그룹</span>
+          </div>
+        </aside>
+      </div>
+
+      <button class="add-group-button" type="button">
+        <span aria-hidden="true">+</span>
+        새 그룹 추가
+      </button>
+    </section>
+  </main>
+</body>
+</html>

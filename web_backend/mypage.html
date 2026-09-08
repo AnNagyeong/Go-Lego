@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AccessNav MyPage</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <main class="phone mypage-phone">
+    <section class="mypage-screen" aria-label="마이 페이지">
+      <header class="mypage-header">
+        <button class="mypage-icon-button" type="button" aria-label="뒤로 가기" onclick="location.href='index.html'">&larr;</button>
+        <h1>마이 페이지</h1>
+        <div class="mypage-header-actions">
+          <button class="mypage-icon-button" type="button" aria-label="알림">
+            <span class="bell-icon" aria-hidden="true"></span>
+          </button>
+          <div class="mypage-settings">
+            <button class="mypage-icon-button" type="button" id="mypageSettingsBtn" aria-label="설정" aria-expanded="false">&#9881;</button>
+            <div class="settings-menu hidden" id="settingsMenu" role="menu">
+              <button type="button" id="logoutBtn" role="menuitem">로그아웃</button>
+            </div>
+          </div>
+        </div>
+      </header>
+
+      <section class="mypage-profile" aria-label="사용자 정보">
+        <div class="profile-avatar" aria-hidden="true"></div>
+        <div class="profile-main">
+          <div class="profile-name-row">
+            <strong class="profile-name" id="profileName">길찾는하마</strong>
+            <span class="profile-badge" aria-label="열정적인 제보자">
+              <span class="badge-mark" aria-hidden="true"></span>
+              열정적인 제보자
+            </span>
+            <button class="profile-edit-button" type="button">편집</button>
+          </div>
+          <p class="profile-email" id="profileEmail">email@gmail.com</p>
+        </div>
+      </section>
+
+      <div class="mypage-content">
+        <section class="report-summary" aria-label="나의 제보 현황">
+          <h2>나의 제보 현황</h2>
+          <div class="summary-grid">
+            <div class="summary-item">
+              <span>제보 내역</span>
+              <strong>12</strong>
+            </div>
+            <div class="summary-divider" aria-hidden="true"></div>
+            <div class="summary-item">
+              <span>승인 대기중</span>
+              <strong>3</strong>
+            </div>
+          </div>
+        </section>
+
+        <section class="benefit-summary" aria-label="포인트와 쿠폰">
+          <div class="benefit-item">
+            <span class="benefit-label"><span class="point-icon" aria-hidden="true"></span> 포인트</span>
+            <strong>138</strong>
+          </div>
+          <div class="benefit-divider" aria-hidden="true"></div>
+          <div class="benefit-item">
+            <span class="benefit-label"><span class="coupon-icon" aria-hidden="true"></span> 제휴 쿠폰</span>
+            <strong>4</strong>
+          </div>
+        </section>
+
+        <nav class="mypage-menu" aria-label="마이 페이지 메뉴">
+          <a href="#" class="mypage-menu-link">나의 리뷰</a>
+          <a href="#" class="mypage-menu-link">고객센터</a>
+          <a href="#" class="mypage-menu-link">공지사항</a>
+        </nav>
+      </div>
+    </section>
+  </main>
+  <script>
+    const token = localStorage.getItem("accessnavToken");
+    const savedUser = localStorage.getItem("accessnavUser");
+
+    let user = null;
+    try {
+      user = savedUser ? JSON.parse(savedUser) : null;
+    } catch {
+      user = null;
+    }
+
+    if (!token || !user) {
+      location.replace("login.html");
+    } else {
+      const profileName = document.getElementById("profileName");
+      const profileEmail = document.getElementById("profileEmail");
+      const settingsBtn = document.getElementById("mypageSettingsBtn");
+      const settingsMenu = document.getElementById("settingsMenu");
+      const logoutBtn = document.getElementById("logoutBtn");
+
+      profileName.textContent = user.nickname || user.email?.split("@")[0] || "AccessNav 사용자";
+      profileEmail.textContent = user.email || "";
+
+      settingsBtn.addEventListener("click", () => {
+        const isOpen = !settingsMenu.classList.contains("hidden");
+        settingsMenu.classList.toggle("hidden", isOpen);
+        settingsBtn.setAttribute("aria-expanded", String(!isOpen));
+      });
+
+      document.addEventListener("click", (event) => {
+        if (settingsBtn.contains(event.target) || settingsMenu.contains(event.target)) return;
+        settingsMenu.classList.add("hidden");
+        settingsBtn.setAttribute("aria-expanded", "false");
+      });
+
+      logoutBtn.addEventListener("click", () => {
+        localStorage.removeItem("accessnavToken");
+        localStorage.removeItem("accessnavUser");
+        location.replace("index.html");
+      });
+    }
+  </script>
+</body>
+</html>
