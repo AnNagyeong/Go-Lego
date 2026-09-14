@@ -10,7 +10,6 @@ AccessNav 웹 UI와 API를 Flutter WebView에 연결한 Android 모바일 프로
 4. MySQL과 MapService 서버를 실행합니다.
 5. USB 디버깅을 허용한 Android 기기를 연결합니다.
 
-`.env`, 사용자 계정 데이터, 인증서와 빌드 캐시는 Git에 포함되지 않습니다. 실제 키를 소스 코드나 `.env.example`에 입력하지 마세요.
 
 ## 모바일 실행
 
