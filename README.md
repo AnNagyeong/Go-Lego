@@ -25,15 +25,11 @@ node server.js
 http://localhost:3000 에 접속합니다. Flutter Chrome 미리보기도 지원합니다.
 DB와 MapService 관련 기능에는 해당 서비스도 실행되어 있어야 합니다.
 
-`.env`, 계정 데이터, 인증서와 개인 키는 Git에 추가하지 마세요.
-
 ## Chrome에서 모바일 디자인 작업
 
 터미널 1: `cd web_backend` → `npm ci` → `node server.js`
 
 터미널 2 (프로젝트 루트): `flutter pub get` → `flutter run -d chrome --web-port 5100`
-
-VS Code에서는 Chrome 모바일 디자인 실행 구성을 선택해 F5를 누르세요.
 
 375/390/430px 폭으로 HTML 화면을 미리 볼 수 있습니다. 수정할 파일은 web_backend/index.html, style.css, script.js입니다. 저장 후 미리보기 상단 새로고침 버튼을 누르세요. assets/web 사본은 이 미리보기의 소스가 아닙니다.
 
