@@ -1,81 +1,28 @@
-# Miscellaneous
-*.class
-*.log
-*.pyc
-*.swp
 .DS_Store
-.atom/
-.build/
-.buildlog/
-.history
-.svn/
-.swiftpm/
-migrate_working_dir/
-
-# IntelliJ related
-*.iml
-*.ipr
-*.iws
+*.log
 .idea/
-
-# The .vscode folder contains launch configuration and tasks you configure in
-# VS Code which you may wish to be included in version control, so this line
-# is commented out by default.
-#.vscode/
-
-# Flutter/Dart/Pub related
-**/doc/api/
-**/ios/Flutter/.last_build_id
+.vscode/*
+!.vscode/launch.json
+*.iml
 .dart_tool/
+.flutter-plugins
 .flutter-plugins-dependencies
-.pub-cache/
-.pub/
-/build/
-**/build/
-/coverage/
-
-# Symbolication related
-app.*.symbols
-
-# Obfuscation related
-app.*.map.json
-
-# Android Studio will place build artifacts here
-/android/app/debug
-/android/app/profile
-/android/app/release
-
-# Widget Preview related
-.widget_preview/
-
-# Local secrets and environment configuration
+.packages
+build/
+.gradle-home/
+.tool-state/
+android/.gradle/
+android/local.properties
+android/key.properties
+*.jks
+*.keystore
+node_modules/
 .env
 .env.*
 !.env.example
-**/.env
-**/.env.*
-!**/.env.example
-*.jks
-*.keystore
-*.p12
+web_backend/data/
 *.pem
-*.key
-key.properties
-google-services.json
+*.p12
+*.pfx
 
-# Machine-local Android and build state
-local.properties
-**/local.properties
-.gradle/
-**/.gradle/
-.gradle-home/
-.tool-state/
-android.gradle/
-node_modules/
-**/node_modules/
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-
-# Runtime user data
-web_backend/data/auth-users.json
+.npm-cache/
