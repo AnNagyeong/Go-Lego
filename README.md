@@ -2,44 +2,37 @@
 
 AccessNav 웹 UI와 API를 Flutter WebView에 연결한 Android 모바일 프로젝트입니다.
 
-## 새 환경 설정
-
-1. Flutter, Android SDK Platform Tools, Node.js를 설치합니다.
-2. `web_backend/.env.example`을 `web_backend/.env`로 복사합니다.
-3. `.env`에 개인 API 키, DB 접속 정보, MapService 경로를 입력합니다.
-4. MySQL과 MapService 서버를 실행합니다.
-5. USB 디버깅을 허용한 Android 기기를 연결합니다.
-
-`.env`, 사용자 계정 데이터, 인증서와 빌드 캐시는 Git에 포함되지 않습니다. 실제 키를 소스 코드나 `.env.example`에 입력하지 마세요.
-
 ## 모바일 실행
 
-프로젝트 루트에서 다음 파일을 실행합니다.
+Flutter, Node.js, Android SDK를 설치하고 `web_backend/.env`를 설정합니다.
+USB 디버깅을 허용한 Android 기기를 연결한 후 프로젝트 폴더에서 실행합니다.
 
 ```powershell
 .\run_mobile.bat
 ```
 
-스크립트는 다음 작업을 자동으로 수행합니다.
+실행 스크립트는 의존성을 확인하고 백엔드를 시작한 뒤 ADB 포트 연결과 Flutter 실행을 수행합니다.
+여러 기기가 연결되어 있으면 `ACCESSNAV_DEVICE_ID` 환경 변수로 기기를 선택합니다.
+기존 3000번 포트 프로세스를 강제 종료하지 않습니다.
 
-- 현재 프로젝트 폴더 사용
-- Node 및 Flutter 의존성 설치·확인
-- 연결된 USB Android 기기 자동 선택
-- 백엔드 실행 및 ADB 포트 연결
-- Flutter 디버그 앱 실행
-
-기기가 여러 대라면 실행 전에 `ACCESSNAV_DEVICE_ID`를 지정할 수 있습니다.
+## PC 브라우저 실행
 
 ```powershell
-$env:ACCESSNAV_DEVICE_ID="adb-device-id"
-.\run_mobile.bat
+cd web_backend
+node server.js
 ```
 
-## 주요 기능
+http://localhost:3000 에 접속합니다. Flutter Chrome 미리보기도 지원합니다.
+DB와 MapService 관련 기능에는 해당 서비스도 실행되어 있어야 합니다.
 
-- 카카오 지도와 장소 검색
-- Google 장소 사진 및 Google 로그인
-- 현재 위치, 방향 센서, GPS 신뢰성 검사
-- 출입구·경로 스냅 및 개발용 경로 시뮬레이션
-- 이동 유형별 DB POI·그래프 경로와 ORS 보완 경로
-- 위험 구간 제보, 사진 촬영·앨범 첨부, 즐겨찾기와 마이페이지
+## Chrome에서 모바일 디자인 작업
+
+터미널 1: `cd web_backend` → `npm ci` → `node server.js`
+
+터미널 2 (프로젝트 루트): `flutter pub get` → `flutter run -d chrome --web-port 5100`
+
+375/390/430px 폭으로 HTML 화면을 미리 볼 수 있습니다. 수정할 파일은 web_backend/index.html, style.css, script.js입니다. 저장 후 미리보기 상단 새로고침 버튼을 누르세요. assets/web 사본은 이 미리보기의 소스가 아닙니다.
+
+백엔드 주소 변경: `flutter run -d chrome --web-port 5100 --dart-define=ACCESSNAV_WEB_URL=http://localhost:3000/index.html?app=1`
+
+지도/API 키와 DB는 web_backend/.env에 설정하세요. 기존 3000 서버가 다른 프로젝트라면 그 서버를 정리한 후 이 프로젝트의 백엔드를 실행해야 합니다. 브라우저 미리보기는 iOS 네이티브 앱 테스트를 대체하지 않습니다. 실제 iPhone 앱 빌드는 macOS/Xcode 및 iOS 프로젝트 설정이 별도로 필요합니다. Google OAuth가 iframe을 제한하면 웹 화면을 직접 열어 로그인하세요.
