@@ -765,7 +765,13 @@ async function handlePlacePhoto(req, res) {
       });
     }
 
-    const textQuery = [name, address].filter(Boolean).join(" ");
+    // 정확한 POI 사진이 없을 때는 Google에서도 세부 노드명(예: 횡단보도_1_B)
+    // 자체를 검색하지 않고, 건물/장소의 대표명으로 검색해 관련 대표 사진을 찾는다.
+    const googleFallbackName = String(name || "")
+      .split("_")[0]
+      .replace(/한양여자대학교|한양여대/g, "")
+      .trim() || name;
+    const textQuery = [googleFallbackName, address].filter(Boolean).join(" ");
     const searchBody = {
       textQuery,
       languageCode: "ko",
@@ -912,10 +918,41 @@ async function findMapServicePlacePhotos(id, rawName) {
             },
           ];
         }
+
+        // 건물 자체에 사진이 없으면, building_entrance 관계로 연결된
+        // 출입구 중 사진이 있는 것을 대표 사진으로 사용한다.
+        const [entranceRows] = await mapServiceDb.execute(
+          `
+          SELECT e.poi_id, e.poi_name, e.poi_type, e.photo_url
+          FROM building_entrance be
+          JOIN poi e ON e.poi_id = be.entrance_poi_id
+          WHERE be.building_poi_id = ?
+            AND e.photo_url IS NOT NULL
+            AND TRIM(e.photo_url) <> ''
+          ORDER BY CASE WHEN e.poi_type = 'entrance' THEN 0 ELSE 1 END, e.poi_name
+          LIMIT 1
+          `,
+          [row.poi_id]
+        );
+
+        const entranceRow = entranceRows[0];
+        if (entranceRow) {
+          let entrancePhotoUri = normalizeMapServicePhotoUrl(entranceRow.photo_url);
+          if (entrancePhotoUri) {
+            return [
+              {
+                photoUri: resolveMapServicePhotoUrl(entrancePhotoUri),
+                source: "mapservice-building-fallback",
+                label: `${entranceRow.poi_name} 입구`,
+                attributions: [],
+              },
+            ];
+          }
+        }
       }
 
-      // 정확한 poi_id가 존재하지만 사진이 없으면 다른 POI 사진을
-      // 이름으로 가져오지 않는다. 오매칭 방지가 우선이다.
+      // 정확한 poi_id에 사진이 없는 경우 다른 POI의 DB 사진을 이름으로
+      // 가져오지 않는다. 잘못된 건물 사진이 섞이는 것을 막고 Google fallback으로 넘긴다.
       return [];
     }
 
