@@ -760,8 +760,8 @@ async function handlePlacePhoto(req, res) {
       const cached = googlePhotoCache.get(cacheKey);
       return res.json({
         ...cached,
-        photoUri: cached.photoUri || databasePhotos[0]?.photoUri || null,
-        photos: [...(cached.photos || []), ...databasePhotos],
+        photoUri: databasePhotos[0]?.photoUri || cached.photoUri || null,
+        photos: [...databasePhotos, ...(cached.photos || [])],
       });
     }
 
@@ -853,8 +853,8 @@ async function handlePlacePhoto(req, res) {
     googlePhotoCache.set(cacheKey, result);
     return res.json({
       ...result,
-      photoUri: result.photoUri || databasePhotos[0]?.photoUri || null,
-      photos: [...resolvedGooglePhotos, ...databasePhotos],
+      photoUri: databasePhotos[0]?.photoUri || result.photoUri || null,
+      photos: [...databasePhotos, ...resolvedGooglePhotos],
     });
   } catch (error) {
     console.error("Google place photo error:", error);
@@ -902,7 +902,7 @@ async function findMapServicePlacePhotos(id, rawName) {
         if (photoUri) {
           return [
             {
-              photoUri,
+              photoUri: resolveMapServicePhotoUrl(photoUri),
               source: "mapservice",
               label:
                 row.poi_type === "entrance"
@@ -974,6 +974,14 @@ function normalizeMapServicePhotoUrl(value) {
   if (photoUrl.startsWith("/")) return photoUrl;
   if (photoUrl.startsWith("panoramas/") || photoUrl.startsWith("images/")) return `/${photoUrl}`;
   return `/panoramas/${path.basename(photoUrl)}`;
+}
+
+function resolveMapServicePhotoUrl(photoUrl) {
+  if (!photoUrl) return null;
+  if (/^https?:\/\//i.test(photoUrl) || photoUrl.startsWith("data:")) {
+    return photoUrl;
+  }
+  return `${MAPSERVICE_BASE_URL}${photoUrl.startsWith("/") ? "" : "/"}${photoUrl}`;
 }
 
 function clampNumber(value, min, max, fallback) {
