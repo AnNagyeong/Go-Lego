@@ -952,7 +952,7 @@ async function findMapServicePlacePhotos(id, rawName) {
 
     return [
       {
-        photoUri,
+        photoUri: resolveMapServicePhotoUrl(photoUri),
         source: "mapservice",
         label:
           row.poi_type === "entrance"
