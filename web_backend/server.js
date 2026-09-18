@@ -867,44 +867,100 @@ async function handlePlacePhoto(req, res) {
 
 async function findMapServicePlacePhotos(id, rawName) {
   try {
-    const baseName = String(rawName || "")
-      .split("_")[0]
-      .replace(/한양여자대학교|한양여대/g, "")
-      .trim();
-    const likeName = `%${baseName}%`;
-    const [rows] = await mapServiceDb.execute(
-      `
-      SELECT DISTINCT p.poi_id, p.poi_name, p.poi_type, p.photo_url
-      FROM poi p
-      LEFT JOIN building_entrance be
-        ON p.poi_id COLLATE utf8mb4_unicode_ci = be.entrance_poi_id
-      LEFT JOIN poi building
-        ON building.poi_id COLLATE utf8mb4_unicode_ci = be.building_poi_id
-      WHERE (p.poi_id = ? OR p.poi_name LIKE ? OR building.poi_id = ? OR building.poi_name LIKE ?)
-      ORDER BY CASE WHEN p.poi_type = 'building' THEN 0 WHEN p.poi_type = 'entrance' THEN 1 ELSE 2 END
-      LIMIT 8
-      `,
-      [id, likeName, id, likeName]
-    );
-    const photos = await Promise.all(rows.map(async (row) => {
-      let photoUri = normalizeMapServicePhotoUrl(row.photo_url);
-      if (!photoUri) {
-        const inferredName = `node_${row.poi_id}.jpg`;
-        try {
-          await fs.access(path.join(MAPSERVICE_PANORAMAS_DIR, inferredName));
-          photoUri = `/panoramas/${inferredName}`;
-        } catch {
-          return null;
+    const poiId = String(id || "").trim();
+
+    // MapService POI 사진은 이름이 아니라 정확한 poi_id를 기준으로 매칭한다.
+    // 이름 일부 검색은 "정보문화관_횡단보도_1_A"가 "정보문화관" 건물 사진으로
+    // 잘못 연결되는 문제를 만들 수 있으므로, ID가 전달된 경우에는 이름 검색을 하지 않는다.
+    if (poiId) {
+      const [rows] = await mapServiceDb.execute(
+        `
+        SELECT poi_id, poi_name, poi_type, photo_url
+        FROM poi
+        WHERE poi_id = ?
+        LIMIT 1
+        `,
+        [poiId]
+      );
+
+      const row = rows[0];
+      if (row) {
+        let photoUri = normalizeMapServicePhotoUrl(row.photo_url);
+
+        // DB photo_url이 아직 없는 기존 데이터는
+        // node_<poi_id> 파일명 규칙으로 같은 POI의 사진을 찾는다.
+        if (!photoUri) {
+          const inferredName = `node_${row.poi_id}.jpg`;
+          try {
+            await fs.access(path.join(MAPSERVICE_PANORAMAS_DIR, inferredName));
+            photoUri = `/panoramas/${inferredName}`;
+          } catch {
+            photoUri = null;
+          }
+        }
+
+        if (photoUri) {
+          return [
+            {
+              photoUri,
+              source: "mapservice",
+              label:
+                row.poi_type === "entrance"
+                  ? `${row.poi_name} 입구`
+                  : row.poi_name,
+              attributions: [],
+            },
+          ];
         }
       }
-      return {
+
+      // 정확한 poi_id가 존재하지만 사진이 없으면 다른 POI 사진을
+      // 이름으로 가져오지 않는다. 오매칭 방지가 우선이다.
+      return [];
+    }
+
+    // poi_id가 없는 레거시/외부 요청만 정확한 이름 기준으로 제한적으로 fallback한다.
+    const rawPoiName = String(rawName || "").trim();
+    const normalizedName = normalizePlaceName(rawPoiName);
+    if (!rawPoiName || !normalizedName) return [];
+
+    const [rows] = await mapServiceDb.execute(
+      `
+      SELECT poi_id, poi_name, poi_type, photo_url
+      FROM poi
+      WHERE poi_name = ?
+         OR REPLACE(REPLACE(REPLACE(poi_name, '_', ''), ' ', ''), '-', '') = ?
+      ORDER BY poi_name = ? DESC
+      LIMIT 1
+      `,
+      [rawPoiName, normalizedName, rawPoiName]
+    );
+
+    const row = rows[0];
+    if (!row) return [];
+
+    let photoUri = normalizeMapServicePhotoUrl(row.photo_url);
+    if (!photoUri) {
+      const inferredName = `node_${row.poi_id}.jpg`;
+      try {
+        await fs.access(path.join(MAPSERVICE_PANORAMAS_DIR, inferredName));
+        photoUri = `/panoramas/${inferredName}`;
+      } catch {
+        return [];
+      }
+    }
+
+    return [
+      {
         photoUri,
         source: "mapservice",
-        label: row.poi_type === "entrance" ? `${row.poi_name} 입구` : row.poi_name,
+        label:
+          row.poi_type === "entrance"
+            ? `${row.poi_name} 입구`
+            : row.poi_name,
         attributions: [],
-      };
-    }));
-    return photos.filter(Boolean);
+      },
+    ];
   } catch (error) {
     console.warn("MapService place photo lookup failed:", error.message);
     return [];
