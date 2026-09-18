@@ -760,8 +760,8 @@ async function handlePlacePhoto(req, res) {
       const cached = googlePhotoCache.get(cacheKey);
       return res.json({
         ...cached,
-        photoUri: cached.photoUri || databasePhotos[0]?.photoUri || null,
-        photos: [...(cached.photos || []), ...databasePhotos],
+        photoUri:  databasePhotos[0]?.photoUri || cached.photoUri || null,
+        photos: [...databasePhotos, ...(cached.photos || [])],
       });
     }
 
@@ -854,7 +854,7 @@ async function handlePlacePhoto(req, res) {
     return res.json({
       ...result,
       photoUri: result.photoUri || databasePhotos[0]?.photoUri || null,
-      photos: [...resolvedGooglePhotos, ...databasePhotos],
+      photos: [...databasePhotos, ...resolvedGooglePhotos],
     });
   } catch (error) {
     console.error("Google place photo error:", error);
@@ -898,8 +898,7 @@ async function findMapServicePlacePhotos(id, rawName) {
         }
       }
       return {
-        photoUri,
-        source: "mapservice",
+        photoUri: resolveMapServicePhotoUrl(photoUri),
         label: row.poi_type === "entrance" ? `${row.poi_name} 입구` : row.poi_name,
         attributions: [],
       };
@@ -918,6 +917,18 @@ function normalizeMapServicePhotoUrl(value) {
   if (photoUrl.startsWith("/")) return photoUrl;
   if (photoUrl.startsWith("panoramas/") || photoUrl.startsWith("images/")) return `/${photoUrl}`;
   return `/panoramas/${path.basename(photoUrl)}`;
+}
+
+function resolveMapServicePhotoUrl(photoUrl) {
+    if (!photoUrl) return null;
+
+    // 이미 완전한 URL이면 그대로 사용
+    if (/^https?:\/\//i.test(photoUrl)) {
+        return photoUrl;
+    }
+
+    // /panoramas/... 같은 상대경로면 MapService 주소를 붙임
+    return `${MAPSERVICE_BASE_URL}${photoUrl.startsWith('/') ? '' : '/'}${photoUrl}`;
 }
 
 function clampNumber(value, min, max, fallback) {
