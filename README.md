@@ -35,4 +35,3 @@ DB와 MapService 관련 기능에는 해당 서비스도 실행되어 있어야 
 
 백엔드 주소 변경: `flutter run -d chrome --web-port 5100 --dart-define=ACCESSNAV_WEB_URL=http://localhost:3000/index.html?app=1`
 
-지도/API 키와 DB는 web_backend/.env에 설정하세요. 기존 3000 서버가 다른 프로젝트라면 그 서버를 정리한 후 이 프로젝트의 백엔드를 실행해야 합니다. 브라우저 미리보기는 iOS 네이티브 앱 테스트를 대체하지 않습니다. 실제 iPhone 앱 빌드는 macOS/Xcode 및 iOS 프로젝트 설정이 별도로 필요합니다. Google OAuth가 iframe을 제한하면 웹 화면을 직접 열어 로그인하세요.
