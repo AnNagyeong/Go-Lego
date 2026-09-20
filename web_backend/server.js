@@ -928,7 +928,7 @@ function normalizeGooglePlaceText(value) {
     .toLowerCase()
     .replace(/대한민국|서울특별시|서울시|성동구/g, "")
     .replace(/한양여자대학교|한양여대/g, "한양여대")
-    .replace(/[s,.-]+/g, "");
+    .replace(/[\s,.-]+/g, "");
 }
 
 async function findMapServicePlacePhotos(id, rawName) {
