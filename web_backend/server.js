@@ -760,12 +760,16 @@ async function handlePlacePhoto(req, res) {
       const cached = googlePhotoCache.get(cacheKey);
       return res.json({
         ...cached,
-        photoUri:  databasePhotos[0]?.photoUri || cached.photoUri || null,
+        photoUri: databasePhotos[0]?.photoUri || cached.photoUri || null,
         photos: [...databasePhotos, ...(cached.photos || [])],
       });
     }
 
-    const textQuery = [name, address].filter(Boolean).join(" ");
+    // 정확한 POI 사진이 없을 때는 Google에서도 세부 노드명(예: 횡단보도_1_B)
+    // 자체를 검색하지 않고, 건물/장소의 대표명으로 검색해 관련 대표 사진을 찾는다.
+    const rawPlaceName = String(name || "").trim();
+    const googleFallbackName = rawPlaceName.split("_")[0].trim() || rawPlaceName;
+    const textQuery = [googleFallbackName, address].filter(Boolean).join(" ");
     const searchBody = {
       textQuery,
       languageCode: "ko",
@@ -792,7 +796,7 @@ async function handlePlacePhoto(req, res) {
           "Content-Type": "application/json",
           "X-Goog-Api-Key": GOOGLE_PLACES_API_KEY,
           "X-Goog-FieldMask":
-            "places.id,places.displayName,places.photos,places.formattedAddress",
+            "places.id,places.displayName,places.photos,places.formattedAddress,places.location",
         },
         body: JSON.stringify(searchBody),
       }
@@ -807,7 +811,13 @@ async function handlePlacePhoto(req, res) {
     }
 
     const searchData = JSON.parse(searchText);
-    const place = searchData.places?.[0];
+    const candidates = Array.isArray(searchData.places) ? searchData.places : [];
+    const place = selectVerifiedGooglePlace(candidates, {
+      name: googleFallbackName,
+      address,
+      lat,
+      lng,
+    });
     const googlePhotos = place?.photos?.slice(0, 5) || [];
 
     if (!googlePhotos.length) {
@@ -853,7 +863,7 @@ async function handlePlacePhoto(req, res) {
     googlePhotoCache.set(cacheKey, result);
     return res.json({
       ...result,
-      photoUri: result.photoUri || databasePhotos[0]?.photoUri || null,
+      photoUri: databasePhotos[0]?.photoUri || result.photoUri || null,
       photos: [...databasePhotos, ...resolvedGooglePhotos],
     });
   } catch (error) {
@@ -865,45 +875,198 @@ async function handlePlacePhoto(req, res) {
   }
 }
 
+function selectVerifiedGooglePlace(candidates, target) {
+  const targetName = normalizeGooglePlaceText(target.name);
+  const targetAddress = normalizeGooglePlaceText(target.address);
+  const hasTargetPoint = !Number.isNaN(target.lat) && !Number.isNaN(target.lng);
+
+  return candidates
+    .map((place) => {
+      const placeName = normalizeGooglePlaceText(place.displayName?.text);
+      const placeAddress = normalizeGooglePlaceText(place.formattedAddress);
+      const nameMatch =
+        Boolean(targetName) &&
+        (placeName === targetName ||
+          placeName.includes(targetName) ||
+          targetName.includes(placeName));
+      const addressMatch =
+        Boolean(targetAddress) &&
+        Boolean(placeAddress) &&
+        (placeAddress.includes(targetAddress) || targetAddress.includes(placeAddress));
+
+      let distance = Infinity;
+      if (hasTargetPoint && place.location) {
+        distance = getDistance(
+          target.lat,
+          target.lng,
+          Number(place.location.latitude),
+          Number(place.location.longitude)
+        );
+      }
+
+      let score = 0;
+      if (nameMatch) score += 100;
+      if (addressMatch) score += 60;
+      if (distance <= 120) score += 50;
+      else if (distance <= 300) score += 20;
+      else if (hasTargetPoint && Number.isFinite(distance)) score -= 100;
+
+      return { place, score, distance };
+    })
+    .filter((candidate) => {
+      if (candidate.score < 100) return false;
+      if (hasTargetPoint && Number.isFinite(candidate.distance) && candidate.distance > 300) {
+        return false;
+      }
+      return true;
+    })
+    .sort((a, b) => b.score - a.score || a.distance - b.distance)[0]?.place || null;
+}
+
+function normalizeGooglePlaceText(value) {
+  return String(value || "")
+    .toLowerCase()
+    .replace(/대한민국|서울특별시|서울시|성동구/g, "")
+    .replace(/한양여자대학교|한양여대/g, "한양여대")
+    .replace(/[\s,.-]+/g, "");
+}
+
 async function findMapServicePlacePhotos(id, rawName) {
   try {
-    const baseName = String(rawName || "")
-      .split("_")[0]
-      .replace(/한양여자대학교|한양여대/g, "")
-      .trim();
-    const likeName = `%${baseName}%`;
-    const [rows] = await mapServiceDb.execute(
-      `
-      SELECT DISTINCT p.poi_id, p.poi_name, p.poi_type, p.photo_url
-      FROM poi p
-      LEFT JOIN building_entrance be
-        ON p.poi_id COLLATE utf8mb4_unicode_ci = be.entrance_poi_id
-      LEFT JOIN poi building
-        ON building.poi_id COLLATE utf8mb4_unicode_ci = be.building_poi_id
-      WHERE (p.poi_id = ? OR p.poi_name LIKE ? OR building.poi_id = ? OR building.poi_name LIKE ?)
-      ORDER BY CASE WHEN p.poi_type = 'building' THEN 0 WHEN p.poi_type = 'entrance' THEN 1 ELSE 2 END
-      LIMIT 8
-      `,
-      [id, likeName, id, likeName]
-    );
-    const photos = await Promise.all(rows.map(async (row) => {
-      let photoUri = normalizeMapServicePhotoUrl(row.photo_url);
-      if (!photoUri) {
-        const inferredName = `node_${row.poi_id}.jpg`;
-        try {
-          await fs.access(path.join(MAPSERVICE_PANORAMAS_DIR, inferredName));
-          photoUri = `/panoramas/${inferredName}`;
-        } catch {
-          return null;
+    const poiId = String(id || "").trim();
+
+    // MapService POI 사진은 이름이 아니라 정확한 poi_id를 기준으로 매칭한다.
+    // 이름 일부 검색은 "정보문화관_횡단보도_1_A"가 "정보문화관" 건물 사진으로
+    // 잘못 연결되는 문제를 만들 수 있으므로, ID가 전달된 경우에는 이름 검색을 하지 않는다.
+    if (poiId) {
+      const [rows] = await mapServiceDb.execute(
+        `
+        SELECT poi_id, poi_name, poi_type, photo_url
+        FROM poi
+        WHERE poi_id = ?
+        LIMIT 1
+        `,
+        [poiId]
+      );
+
+      const row = rows[0];
+      if (row) {
+        let photoUri = normalizeMapServicePhotoUrl(row.photo_url);
+
+        // DB photo_url이 아직 없는 기존 데이터는
+        // node_<poi_id> 파일명 규칙으로 같은 POI의 사진을 찾는다.
+        if (!photoUri) {
+          const inferredName = `node_${row.poi_id}.jpg`;
+          try {
+            await fs.access(path.join(MAPSERVICE_PANORAMAS_DIR, inferredName));
+            photoUri = `/panoramas/${inferredName}`;
+          } catch {
+            photoUri = null;
+          }
+        }
+
+        if (photoUri) {
+          return [
+            {
+              photoUri: resolveMapServicePhotoUrl(photoUri),
+              source: "mapservice",
+              label:
+                row.poi_type === "entrance"
+                  ? `${row.poi_name} 입구`
+                  : row.poi_name,
+              attributions: [],
+            },
+          ];
+        }
+
+        // 건물 자체에 사진이 없으면, building_entrance 관계로 연결된
+        // 출입구 중 사진이 있는 것을 대표 사진으로 사용한다.
+        const [entranceRows] = await mapServiceDb.execute(
+          `
+          SELECT e.poi_id, e.poi_name, e.poi_type, e.photo_url
+          FROM building_entrance be
+          JOIN poi e ON e.poi_id = be.entrance_poi_id
+          WHERE be.building_poi_id = ?
+          ORDER BY CASE WHEN e.poi_type = 'entrance' THEN 0 ELSE 1 END, e.poi_name
+          LIMIT 10
+          `,
+          [row.poi_id]
+        );
+
+        for (const entranceRow of entranceRows) {
+          let entrancePhotoUri = normalizeMapServicePhotoUrl(entranceRow.photo_url);
+          if (!entrancePhotoUri) {
+            const inferredEntranceName = `node_${entranceRow.poi_id}.jpg`;
+            try {
+              await fs.access(
+                path.join(MAPSERVICE_PANORAMAS_DIR, inferredEntranceName)
+              );
+              entrancePhotoUri = `/panoramas/${inferredEntranceName}`;
+            } catch {
+              entrancePhotoUri = null;
+            }
+          }
+
+          if (entrancePhotoUri) {
+            return [
+              {
+                photoUri: resolveMapServicePhotoUrl(entrancePhotoUri),
+                source: "mapservice-building-fallback",
+                label: `${entranceRow.poi_name} 입구`,
+                attributions: [],
+              },
+            ];
+          }
         }
       }
-      return {
+
+      // 정확한 poi_id에 사진이 없는 경우 다른 POI의 DB 사진을 이름으로
+      // 가져오지 않는다. 잘못된 건물 사진이 섞이는 것을 막고 Google fallback으로 넘긴다.
+      return [];
+    }
+
+    // poi_id가 없는 레거시/외부 요청만 정확한 이름 기준으로 제한적으로 fallback한다.
+    const rawPoiName = String(rawName || "").trim();
+    const normalizedName = normalizePlaceName(rawPoiName);
+    if (!rawPoiName || !normalizedName) return [];
+
+    const [rows] = await mapServiceDb.execute(
+      `
+      SELECT poi_id, poi_name, poi_type, photo_url
+      FROM poi
+      WHERE poi_name = ?
+         OR REPLACE(REPLACE(REPLACE(poi_name, '_', ''), ' ', ''), '-', '') = ?
+      ORDER BY poi_name = ? DESC
+      LIMIT 1
+      `,
+      [rawPoiName, normalizedName, rawPoiName]
+    );
+
+    const row = rows[0];
+    if (!row) return [];
+
+    let photoUri = normalizeMapServicePhotoUrl(row.photo_url);
+    if (!photoUri) {
+      const inferredName = `node_${row.poi_id}.jpg`;
+      try {
+        await fs.access(path.join(MAPSERVICE_PANORAMAS_DIR, inferredName));
+        photoUri = `/panoramas/${inferredName}`;
+      } catch {
+        return [];
+      }
+    }
+
+    return [
+      {
         photoUri: resolveMapServicePhotoUrl(photoUri),
-        label: row.poi_type === "entrance" ? `${row.poi_name} 입구` : row.poi_name,
+        source: "mapservice",
+        label:
+          row.poi_type === "entrance"
+            ? `${row.poi_name} 입구`
+            : row.poi_name,
         attributions: [],
-      };
-    }));
-    return photos.filter(Boolean);
+      },
+    ];
   } catch (error) {
     console.warn("MapService place photo lookup failed:", error.message);
     return [];
@@ -920,15 +1083,11 @@ function normalizeMapServicePhotoUrl(value) {
 }
 
 function resolveMapServicePhotoUrl(photoUrl) {
-    if (!photoUrl) return null;
-
-    // 이미 완전한 URL이면 그대로 사용
-    if (/^https?:\/\//i.test(photoUrl)) {
-        return photoUrl;
-    }
-
-    // /panoramas/... 같은 상대경로면 MapService 주소를 붙임
-    return `${MAPSERVICE_BASE_URL}${photoUrl.startsWith('/') ? '' : '/'}${photoUrl}`;
+  if (!photoUrl) return null;
+  if (/^https?:\/\//i.test(photoUrl) || photoUrl.startsWith("data:")) {
+    return photoUrl;
+  }
+  return `${MAPSERVICE_BASE_URL}${photoUrl.startsWith("/") ? "" : "/"}${photoUrl}`;
 }
 
 function clampNumber(value, min, max, fallback) {
@@ -1479,6 +1638,9 @@ function searchNamesForPlace(item) {
     normalizePlaceName(baseName),
   ]);
 
+  names.add(normalizePlaceName(`한양여자대학교 ${baseName}`));
+  names.add(normalizePlaceName(`한양여대 ${baseName}`));
+
   if (item.address_name?.includes("entrance") || /정문|쪽문|입구|출입구/.test(rawName)) {
     names.add(normalizePlaceName(`${baseName} 입구`));
     names.add(normalizePlaceName(`${baseName} 출입구`));
@@ -1505,7 +1667,7 @@ async function loadMapServiceGraph() {
       p.latitude as lat, p.longitude as lng, p.poi_type as type,
       be.entrance_poi_id
     FROM poi p
-    JOIN building_entrance be
+    LEFT JOIN building_entrance be
       ON p.poi_id COLLATE utf8mb4_unicode_ci = be.building_poi_id
     WHERE p.poi_type = 'building'
     `
@@ -1537,7 +1699,9 @@ async function loadMapServiceGraph() {
         entrances: [],
       };
     }
-    buildingMap[id].entrances.push(String(row.entrance_poi_id));
+    if (row.entrance_poi_id) {
+      buildingMap[id].entrances.push(String(row.entrance_poi_id));
+    }
   });
 
   if (!Object.keys(buildingMap).length) {
