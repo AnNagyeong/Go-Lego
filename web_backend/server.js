@@ -767,10 +767,8 @@ async function handlePlacePhoto(req, res) {
 
     // 정확한 POI 사진이 없을 때는 Google에서도 세부 노드명(예: 횡단보도_1_B)
     // 자체를 검색하지 않고, 건물/장소의 대표명으로 검색해 관련 대표 사진을 찾는다.
-    const googleFallbackName = String(name || "")
-      .split("_")[0]
-      .replace(/한양여자대학교|한양여대/g, "")
-      .trim() || name;
+    const rawPlaceName = String(name || "").trim();
+    const googleFallbackName = rawPlaceName.split("_")[0].trim() || rawPlaceName;
     const textQuery = [googleFallbackName, address].filter(Boolean).join(" ");
     const searchBody = {
       textQuery,
@@ -798,7 +796,7 @@ async function handlePlacePhoto(req, res) {
           "Content-Type": "application/json",
           "X-Goog-Api-Key": GOOGLE_PLACES_API_KEY,
           "X-Goog-FieldMask":
-            "places.id,places.displayName,places.photos,places.formattedAddress",
+            "places.id,places.displayName,places.photos,places.formattedAddress,places.location",
         },
         body: JSON.stringify(searchBody),
       }
@@ -813,7 +811,13 @@ async function handlePlacePhoto(req, res) {
     }
 
     const searchData = JSON.parse(searchText);
-    const place = searchData.places?.[0];
+    const candidates = Array.isArray(searchData.places) ? searchData.places : [];
+    const place = selectVerifiedGooglePlace(candidates, {
+      name: googleFallbackName,
+      address,
+      lat,
+      lng,
+    });
     const googlePhotos = place?.photos?.slice(0, 5) || [];
 
     if (!googlePhotos.length) {
@@ -869,6 +873,62 @@ async function handlePlacePhoto(req, res) {
       error: error.message,
     });
   }
+}
+
+function selectVerifiedGooglePlace(candidates, target) {
+  const targetName = normalizeGooglePlaceText(target.name);
+  const targetAddress = normalizeGooglePlaceText(target.address);
+  const hasTargetPoint = !Number.isNaN(target.lat) && !Number.isNaN(target.lng);
+
+  return candidates
+    .map((place) => {
+      const placeName = normalizeGooglePlaceText(place.displayName?.text);
+      const placeAddress = normalizeGooglePlaceText(place.formattedAddress);
+      const nameMatch =
+        Boolean(targetName) &&
+        (placeName === targetName ||
+          placeName.includes(targetName) ||
+          targetName.includes(placeName));
+      const addressMatch =
+        Boolean(targetAddress) &&
+        Boolean(placeAddress) &&
+        (placeAddress.includes(targetAddress) || targetAddress.includes(placeAddress));
+
+      let distance = Infinity;
+      if (hasTargetPoint && place.location) {
+        distance = getDistance(
+          target.lat,
+          target.lng,
+          Number(place.location.latitude),
+          Number(place.location.longitude)
+        );
+      }
+
+      let score = 0;
+      if (nameMatch) score += 100;
+      if (addressMatch) score += 60;
+      if (distance <= 120) score += 50;
+      else if (distance <= 300) score += 20;
+      else if (hasTargetPoint && Number.isFinite(distance)) score -= 100;
+
+      return { place, score, distance };
+    })
+    .filter((candidate) => {
+      if (candidate.score < 100) return false;
+      if (hasTargetPoint && Number.isFinite(candidate.distance) && candidate.distance > 300) {
+        return false;
+      }
+      return true;
+    })
+    .sort((a, b) => b.score - a.score || a.distance - b.distance)[0]?.place || null;
+}
+
+function normalizeGooglePlaceText(value) {
+  return String(value || "")
+    .toLowerCase()
+    .replace(/대한민국|서울특별시|서울시|성동구/g, "")
+    .replace(/한양여자대학교|한양여대/g, "한양여대")
+    .replace(/[s,.-]+/g, "");
 }
 
 async function findMapServicePlacePhotos(id, rawName) {
@@ -927,17 +987,26 @@ async function findMapServicePlacePhotos(id, rawName) {
           FROM building_entrance be
           JOIN poi e ON e.poi_id = be.entrance_poi_id
           WHERE be.building_poi_id = ?
-            AND e.photo_url IS NOT NULL
-            AND TRIM(e.photo_url) <> ''
           ORDER BY CASE WHEN e.poi_type = 'entrance' THEN 0 ELSE 1 END, e.poi_name
-          LIMIT 1
+          LIMIT 10
           `,
           [row.poi_id]
         );
 
-        const entranceRow = entranceRows[0];
-        if (entranceRow) {
+        for (const entranceRow of entranceRows) {
           let entrancePhotoUri = normalizeMapServicePhotoUrl(entranceRow.photo_url);
+          if (!entrancePhotoUri) {
+            const inferredEntranceName = `node_${entranceRow.poi_id}.jpg`;
+            try {
+              await fs.access(
+                path.join(MAPSERVICE_PANORAMAS_DIR, inferredEntranceName)
+              );
+              entrancePhotoUri = `/panoramas/${inferredEntranceName}`;
+            } catch {
+              entrancePhotoUri = null;
+            }
+          }
+
           if (entrancePhotoUri) {
             return [
               {
@@ -1569,6 +1638,9 @@ function searchNamesForPlace(item) {
     normalizePlaceName(baseName),
   ]);
 
+  names.add(normalizePlaceName(`한양여자대학교 ${baseName}`));
+  names.add(normalizePlaceName(`한양여대 ${baseName}`));
+
   if (item.address_name?.includes("entrance") || /정문|쪽문|입구|출입구/.test(rawName)) {
     names.add(normalizePlaceName(`${baseName} 입구`));
     names.add(normalizePlaceName(`${baseName} 출입구`));
@@ -1595,7 +1667,7 @@ async function loadMapServiceGraph() {
       p.latitude as lat, p.longitude as lng, p.poi_type as type,
       be.entrance_poi_id
     FROM poi p
-    JOIN building_entrance be
+    LEFT JOIN building_entrance be
       ON p.poi_id COLLATE utf8mb4_unicode_ci = be.building_poi_id
     WHERE p.poi_type = 'building'
     `
@@ -1627,7 +1699,9 @@ async function loadMapServiceGraph() {
         entrances: [],
       };
     }
-    buildingMap[id].entrances.push(String(row.entrance_poi_id));
+    if (row.entrance_poi_id) {
+      buildingMap[id].entrances.push(String(row.entrance_poi_id));
+    }
   });
 
   if (!Object.keys(buildingMap).length) {
