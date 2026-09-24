@@ -13,8 +13,7 @@ import 'package:webview_flutter/webview_flutter.dart';
 import 'package:webview_flutter_android/webview_flutter_android.dart';
 
 //같은 와이파이, 서버 켜있어야함
-const String kServerHost = '192.168.35.153';
-//민지 ip임
+const String kServerHost = '자기 ip 넣기';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
