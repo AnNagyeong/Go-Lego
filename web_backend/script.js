@@ -3972,8 +3972,10 @@ function showAgentRouteOnMap(payload, route, startNavigation = false) {
     return;
   }
   if (navigationMode) stopNavigationTracking({ silent: true });
-  const nextStart = agentRoutePointToPlace(path[0], payload.start?.name || "출발지");
-  const nextEnd = agentRoutePointToPlace(path[path.length - 1], payload.destination?.name || "목적지");
+  const startPoint = route.start || path[0];
+  const endPoint = route.destination || path[path.length - 1];
+  const nextStart = agentRoutePointToPlace(startPoint, payload.start?.name || "출발지");
+  const nextEnd = agentRoutePointToPlace(endPoint, payload.destination?.name || "목적지");
   if (!nextStart || !nextEnd) {
     appendAgentMessage("출발지 또는 도착지 좌표를 확인할 수 없습니다.", "error");
     return;
