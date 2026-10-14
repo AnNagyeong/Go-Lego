@@ -3430,6 +3430,13 @@ body.dev-environment .dev-simulation-btn {
 .agent-message-user { align-self:flex-end; border-bottom-right-radius:5px; background:#eaffdf; color:#1e4c17; }
 .agent-message span { color:#6c747c; font-size:12px; }
 .agent-message-error { border:1px solid #f0c9c9; background:#fff6f6; color:#9c3030; }
+.agent-photo-gallery { display:grid; grid-template-columns:1fr; gap:10px; width:100%; max-width:100%; align-self:stretch; }
+.agent-photo-card { min-width:0; margin:0; padding:8px; border:1px solid #e3e7e3; border-radius:12px; background:#fff; }
+.agent-photo-card img { display:block; width:100%; max-height:230px; object-fit:contain; border-radius:8px; background:#f5f6f5; }
+.agent-photo-card figcaption { display:flex; flex-direction:column; gap:4px; padding:7px 2px 1px; overflow-wrap:anywhere; }
+.agent-photo-card figcaption strong { color:#222; font-size:13px; }
+.agent-photo-card figcaption span { color:#6c747c; font-size:12px; line-height:1.4; }
+.agent-photo-unavailable { display:flex; min-height:84px; align-items:center; justify-content:center; padding:12px; border-radius:8px; background:#f2f4f6; color:#6c747c; font-size:12px; text-align:center; }
 .agent-route-card { width:100%; margin-top:9px; padding:12px; border:1px solid #dcebd5; border-radius:13px; background:#fff; }
 .agent-route-card strong,.agent-route-card small { display:block; }
 .agent-route-card strong { font-size:13px; }
