@@ -3920,7 +3920,7 @@ function appendAgentMessage(text, kind = "bot") {
 }
 
 async function getAgentCurrentLocationIfNeeded(message) {
-  const normalized = String(message || "").replace(/한양여자대학교|한양여대/g, "").replace(/[\\s_()-]/g, "").toLowerCase();
+  const normalized = String(message || "").replace(/한양여자대학교|한양여대/g, "").replace(/[\s_()-]/g, "").toLowerCase();
   const buildings = ["정보문화관", "본관", "도서관", "디자인관", "운동장", "교수회관"];
   const mentionedBuildings = buildings.filter((name) => normalized.includes(name.toLowerCase()));
   const isRouteQuestion = /경로|길찾기|길안내|가는길|가는법|이동|안내해줘|안내해주세요|까지|찾아가|갈수/i.test(normalized);
@@ -4014,7 +4014,7 @@ function showAgentRouteOnMap(payload, route, startNavigation = false) {
     ...route, path, dangerCount: Number(route.dangerCount ?? route.danger_count ?? 0),
     features: { stairs: Number(route.features?.stairs || 0), ramps: Number(route.features?.ramps || 0), elevators: Number(route.features?.elevators || 0), crosswalks: Number(route.features?.crosswalks || 0) },
   };
-  const hasExplicitAgentStart = !/^(현재\\s*위치|현재위치|내\\s*위치|내위치)$/i.test(String(startPlace.place_name || "").trim());
+  const hasExplicitAgentStart = !/^(현재\s*위치|현재위치|내\s*위치|내위치)$/i.test(String(startPlace.place_name || "").trim());
   currentRouteData = {
     ok: true,
     start: payload.start || { name: startPlace.place_name, lat: startPlace.y, lng: startPlace.x },
