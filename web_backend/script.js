@@ -2384,10 +2384,12 @@ function syncRouteEndpoints(data, route) {
 
 function updateSelectedRouteSheet(route) {
   const routeLabel = route.id === "accessible" ? "추천 경로" : "최단 경로";
+  const dangerCount = Number(route.dangerCount ?? route.danger_count ?? 0);
   renderRoutePanel(
     `${endPlace.place_name}까지 ${routeLabel}`,
-    `계단 ${route.features.stairs}개 · 경사로 ${route.features.ramps}개 · ` +
-      `엘리베이터 ${route.features.elevators}개 · 횡단보도 ${route.features.crosswalks}개`
+    `위험 구간 ${Number.isFinite(dangerCount) ? dangerCount : 0}곳 · ` +
+      `계단 ${Number(route.features?.stairs || 0)}개 · 경사로 ${Number(route.features?.ramps || 0)}개 · ` +
+      `엘리베이터 ${Number(route.features?.elevators || 0)}개 · 횡단보도 ${Number(route.features?.crosswalks || 0)}개`
   );
 }
 
@@ -3913,10 +3915,14 @@ agentForm?.addEventListener("submit", async (event) => {
     } else if (payload.intent === "ROUTE") {
       appendAgentMessage("경로 데이터가 반환되지 않았습니다. 출발지와 목적지 이름을 더 정확하게 알려주세요.", "error");
     } else if (Array.isArray(payload.items) && payload.items.length) {
-      appendAgentMessage(payload.items.slice(0, 6).map((item) => {
-        const where = [item.floor, item.description].filter(Boolean).join(" · ");
-        return `• ${item.name}${where ? " — " + where : ""}`;
-      }).join("\\n"), "bot");
+      if (payload.intent === "PHOTO") {
+        renderAgentPhotoGallery(payload.items);
+      } else {
+        appendAgentMessage(payload.items.slice(0, 6).map((item) => {
+          const where = [item.floor, item.description].filter(Boolean).join(" · ");
+          return `• ${item.name}${where ? " — " + where : ""}`;
+        }).join("\\n"), "bot");
+      }
     }
   } catch (error) {
     pending.remove();
@@ -3936,6 +3942,55 @@ function appendAgentMessage(text, kind = "bot") {
   agentMessages.appendChild(node);
   agentMessages.scrollTop = agentMessages.scrollHeight;
   return node;
+}
+
+function renderAgentPhotoGallery(items) {
+  const gallery = document.createElement("div");
+  gallery.className = "agent-photo-gallery";
+  gallery.setAttribute("aria-label", "등록된 장소 사진");
+
+  items.slice(0, 5).forEach((item) => {
+    const card = document.createElement("figure");
+    card.className = "agent-photo-card";
+    const rawUrl = item.photoUrl || item.photo_url || item.imageUrl || item.image_url || item.url;
+    const caption = document.createElement("figcaption");
+    const name = document.createElement("strong");
+    name.textContent = item.name || "등록된 장소 사진";
+    caption.appendChild(name);
+    const metadata = [item.floor, item.description].filter(Boolean).join(" · ");
+    if (metadata) {
+      const detail = document.createElement("span");
+      detail.textContent = metadata;
+      caption.appendChild(detail);
+    }
+
+    if (typeof rawUrl === "string" && /^https?:\/\//i.test(rawUrl)) {
+      const image = document.createElement("img");
+      image.src = rawUrl;
+      image.alt = item.name || "등록된 장소 사진";
+      image.loading = "lazy";
+      image.referrerPolicy = "no-referrer";
+      image.addEventListener("error", () => {
+        image.remove();
+        const fallback = document.createElement("span");
+        fallback.className = "agent-photo-unavailable";
+        fallback.textContent = "사진을 불러오지 못했습니다.";
+        caption.appendChild(fallback);
+      }, { once: true });
+      card.appendChild(image);
+    } else {
+      const fallback = document.createElement("span");
+      fallback.className = "agent-photo-unavailable";
+      fallback.textContent = "사진 주소가 등록되어 있지 않습니다.";
+      card.appendChild(fallback);
+    }
+
+    card.appendChild(caption);
+    gallery.appendChild(card);
+  });
+
+  agentMessages.appendChild(gallery);
+  agentMessages.scrollTop = agentMessages.scrollHeight;
 }
 
 async function getAgentCurrentLocationIfNeeded(message) {
@@ -3975,7 +4030,8 @@ function renderAgentRouteActions(messageNode, payload) {
     const title = document.createElement("strong");
     title.textContent = route.title || (index === 0 ? "추천 경로" : `경로 ${index + 1}`);
     const details = document.createElement("small");
-    details.textContent = `${Number.isFinite(Number(route.distance)) ? Math.round(route.distance) + "m" : "거리 정보 없음"} · ${Number.isFinite(Number(route.duration)) ? Math.round(route.duration) + "분" : "시간 정보 없음"}`;
+    const dangerCount = Number(route.dangerCount ?? route.danger_count ?? 0);
+    details.textContent = `${Number.isFinite(Number(route.distance)) ? Math.round(route.distance) + "m" : "거리 정보 없음"} · ${Number.isFinite(Number(route.duration)) ? Math.round(route.duration) + "분" : "시간 정보 없음"} · 위험 구간 ${Number.isFinite(dangerCount) ? dangerCount : 0}곳`;
     const actions = document.createElement("div");
     actions.className = "agent-route-actions";
     const viewButton = document.createElement("button");
