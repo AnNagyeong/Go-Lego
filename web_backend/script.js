@@ -2818,6 +2818,25 @@ async function processNavigationLocation(rawLocation, { initializeRoute = true }
   const validation = validateLocation(rawLocation);
   if (!validation.valid || isLocationJump(lastAcceptedLocation, rawLocation)) return;
 
+  // Agent에서 출발지를 명시한 경우, GPS가 그 출발지와 멀리 떨어져 있으면
+  // 현재 위치 기준으로 지도/잔여거리 UI를 덮어쓰지 않습니다.
+  // 사용자가 지정 출발지 근처(100m 이내)에 도착하면 GPS 안내를 이어갑니다.
+  if (currentRouteData?.preserveAgentRouteStart) {
+    const activeRoute = currentRouteData.selectedRoute || currentRouteData.routes?.[0];
+    const routeStart = activeRoute?.path?.[0];
+    if (routeStart) {
+      const distanceFromExplicitStart = getDistance(
+        rawLocation.latitude,
+        rawLocation.longitude,
+        Number(routeStart.lat),
+        Number(routeStart.lng)
+      );
+      if (!Number.isFinite(distanceFromExplicitStart) || distanceFromExplicitStart > 100) {
+        return;
+      }
+    }
+  }
+
   if (
     initializeRoute &&
     !navigationRouteInitialized &&
