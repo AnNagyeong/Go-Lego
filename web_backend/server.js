@@ -1379,7 +1379,7 @@ app.post("/api/agent/chat", async (req, res) => {
   if (!message) return res.status(400).json({ ok: false, error: "질문을 입력해주세요." });
   if (message.length > 200) return res.status(400).json({ ok: false, error: "질문은 200자 이내여야 합니다." });
 
-  const agentBaseUrl = String(process.env.AGENT_BASE_URL || "http://127.0.0.1:8000").replace(/\\/+$/, "");
+  const agentBaseUrl = String(process.env.AGENT_BASE_URL || "http://127.0.0.1:8000").replace(/\/+$/, "");
   try {
     const agentResponse = await fetch(`${agentBaseUrl}/api/agent/chat`, {
       method: "POST",
