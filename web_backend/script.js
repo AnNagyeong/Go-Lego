@@ -2818,7 +2818,11 @@ async function processNavigationLocation(rawLocation, { initializeRoute = true }
   const validation = validateLocation(rawLocation);
   if (!validation.valid || isLocationJump(lastAcceptedLocation, rawLocation)) return;
 
-  if (initializeRoute && !navigationRouteInitialized) {
+  if (
+    initializeRoute &&
+    !navigationRouteInitialized &&
+    !currentRouteData?.preserveAgentRouteStart
+  ) {
     navigationRouteInitialized = true;
     const entrance = await findNearbyEntrance(rawLocation);
     const correctedStart = snapToEntrance(rawLocation, entrance);
@@ -2847,6 +2851,7 @@ async function processNavigationLocation(rawLocation, { initializeRoute = true }
 
   if (
     !navigationSimulationActive &&
+    !currentRouteData?.preserveAgentRouteStart &&
     Number.isFinite(displayLocation.routeDistance) &&
     displayLocation.routeDistance > ROUTE_RECALCULATION_DISTANCE
   ) {
@@ -3915,11 +3920,30 @@ function appendAgentMessage(text, kind = "bot") {
 }
 
 async function getAgentCurrentLocationIfNeeded(message) {
-  if (!/현재\\s*위치|내\\s*위치|여기서|지금\\s*여기/i.test(message)) return null;
-  if (currentLocationPosition) return { currentLatitude: currentLocationPosition.getLat(), currentLongitude: currentLocationPosition.getLng() };
+  const normalized = String(message || "").replace(/한양여자대학교|한양여대/g, "").replace(/[\\s_()-]/g, "").toLowerCase();
+  const buildings = ["정보문화관", "본관", "도서관", "디자인관", "운동장", "교수회관"];
+  const mentionedBuildings = buildings.filter((name) => normalized.includes(name.toLowerCase()));
+  const isRouteQuestion = /경로|길찾기|길안내|가는길|가는법|이동|안내해줘|안내해주세요|까지|찾아가|갈수/i.test(normalized);
+  const explicitlyRequestsCurrentLocation = /현재위치|내위치|여기서|지금여기/i.test(normalized);
+
+  // 목적지만 한 곳 언급한 길찾기는 현재 위치에서 출발하는 요청으로 처리합니다.
+  // 출발지와 목적지를 모두 명시한 요청에는 현재 위치를 출발지로 덮어쓰지 않습니다.
+  const needsCurrentLocation = explicitlyRequestsCurrentLocation ||
+    (isRouteQuestion && mentionedBuildings.length === 1);
+  if (!needsCurrentLocation) return null;
+
+  if (currentLocationPosition) {
+    return {
+      currentLatitude: currentLocationPosition.getLat(),
+      currentLongitude: currentLocationPosition.getLng(),
+    };
+  }
   if (!navigator.geolocation) return null;
   return new Promise((resolve) => navigator.geolocation.getCurrentPosition(
-    (position) => resolve({ currentLatitude: position.coords.latitude, currentLongitude: position.coords.longitude }),
+    (position) => resolve({
+      currentLatitude: position.coords.latitude,
+      currentLongitude: position.coords.longitude,
+    }),
     () => resolve(null),
     { enableHighAccuracy: true, timeout: 8000, maximumAge: 30000 }
   ));
@@ -3990,11 +4014,13 @@ function showAgentRouteOnMap(payload, route, startNavigation = false) {
     ...route, path, dangerCount: Number(route.dangerCount ?? route.danger_count ?? 0),
     features: { stairs: Number(route.features?.stairs || 0), ramps: Number(route.features?.ramps || 0), elevators: Number(route.features?.elevators || 0), crosswalks: Number(route.features?.crosswalks || 0) },
   };
+  const hasExplicitAgentStart = !/^(현재\\s*위치|현재위치|내\\s*위치|내위치)$/i.test(String(startPlace.place_name || "").trim());
   currentRouteData = {
     ok: true,
     start: payload.start || { name: startPlace.place_name, lat: startPlace.y, lng: startPlace.x },
     destination: payload.destination || { name: endPlace.place_name, lat: endPlace.y, lng: endPlace.x },
     routes: [adaptedRoute], selectedRoute: adaptedRoute, source: "agent",
+    preserveAgentRouteStart: hasExplicitAgentStart,
   };
   clearDangerZones();
   drawRoute({ path, colored: true });
