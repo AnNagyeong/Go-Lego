@@ -3832,3 +3832,179 @@ function clearSearchMarkers() {
   markers = [];
   clickedPlaceMarker = null;
 }
+
+
+// ================= AI Agent chat + navigation bridge =================
+const agentFab = document.getElementById("agentFab");
+const agentPanel = document.getElementById("agentPanel");
+const agentCloseBtn = document.getElementById("agentCloseBtn");
+const agentForm = document.getElementById("agentForm");
+const agentInput = document.getElementById("agentMessageInput");
+const agentMessages = document.getElementById("agentMessages");
+const agentSendBtn = document.getElementById("agentSendBtn");
+const agentMobilityType = document.getElementById("agentMobilityType");
+
+agentFab?.addEventListener("click", () => {
+  const opening = agentPanel?.classList.contains("hidden");
+  agentPanel?.classList.toggle("hidden", !opening);
+  agentFab.setAttribute("aria-expanded", String(Boolean(opening)));
+  if (opening) setTimeout(() => agentInput?.focus(), 80);
+});
+agentCloseBtn?.addEventListener("click", closeAgentPanel);
+function closeAgentPanel() {
+  agentPanel?.classList.add("hidden");
+  agentFab?.setAttribute("aria-expanded", "false");
+}
+document.querySelectorAll("[data-agent-question]").forEach((button) => {
+  button.addEventListener("click", () => {
+    if (agentInput) agentInput.value = button.dataset.agentQuestion || "";
+    if (agentPanel?.classList.contains("hidden")) agentFab?.click();
+    agentForm?.requestSubmit();
+  });
+});
+agentForm?.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const message = String(agentInput?.value || "").trim();
+  if (!message || !agentMessages || !agentSendBtn) return;
+  appendAgentMessage(message, "user");
+  agentInput.value = "";
+  agentSendBtn.disabled = true;
+  const pending = appendAgentMessage("질문을 확인하고 있습니다…", "bot");
+  try {
+    const locationInfo = await getAgentCurrentLocationIfNeeded(message);
+    const response = await fetch("/api/agent/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message, mobilityType: agentMobilityType?.value || selectedMobilityType, ...(locationInfo || {}) }),
+    });
+    const payload = await response.json().catch(() => ({}));
+    pending.remove();
+    if (!response.ok || payload.ok === false) {
+      appendAgentMessage(payload.error || payload.detail || "Agent 요청을 처리하지 못했습니다.", "error");
+      return;
+    }
+    const answer = appendAgentMessage(payload.answer || "요청을 처리했습니다.", "bot");
+    if (payload.intent === "ROUTE" && Array.isArray(payload.routes) && payload.routes.length) {
+      renderAgentRouteActions(answer, payload);
+    } else if (payload.intent === "ROUTE") {
+      appendAgentMessage("경로 데이터가 반환되지 않았습니다. 출발지와 목적지 이름을 더 정확하게 알려주세요.", "error");
+    } else if (Array.isArray(payload.items) && payload.items.length) {
+      appendAgentMessage(payload.items.slice(0, 6).map((item) => {
+        const where = [item.floor, item.description].filter(Boolean).join(" · ");
+        return `• ${item.name}${where ? " — " + where : ""}`;
+      }).join("\\n"), "bot");
+    }
+  } catch (error) {
+    pending.remove();
+    appendAgentMessage("Agent 서버에 연결하지 못했습니다. Go-Lego 서버와 Python Agent 서버가 실행 중인지 확인해주세요.", "error");
+    console.error("Agent chat failed:", error);
+  } finally {
+    agentSendBtn.disabled = false;
+    agentInput?.focus();
+  }
+});
+
+function appendAgentMessage(text, kind = "bot") {
+  const node = document.createElement("div");
+  node.className = `agent-message ${kind === "user" ? "agent-message-user" : "agent-message-bot"}`;
+  if (kind === "error") node.classList.add("agent-message-error");
+  node.textContent = text;
+  agentMessages.appendChild(node);
+  agentMessages.scrollTop = agentMessages.scrollHeight;
+  return node;
+}
+
+async function getAgentCurrentLocationIfNeeded(message) {
+  if (!/현재\\s*위치|내\\s*위치|여기서|지금\\s*여기/i.test(message)) return null;
+  if (currentLocationPosition) return { currentLatitude: currentLocationPosition.getLat(), currentLongitude: currentLocationPosition.getLng() };
+  if (!navigator.geolocation) return null;
+  return new Promise((resolve) => navigator.geolocation.getCurrentPosition(
+    (position) => resolve({ currentLatitude: position.coords.latitude, currentLongitude: position.coords.longitude }),
+    () => resolve(null),
+    { enableHighAccuracy: true, timeout: 8000, maximumAge: 30000 }
+  ));
+}
+
+function renderAgentRouteActions(messageNode, payload) {
+  (payload.routes || []).slice(0, 3).forEach((route, index) => {
+    const card = document.createElement("div");
+    card.className = "agent-route-card";
+    const title = document.createElement("strong");
+    title.textContent = route.title || (index === 0 ? "추천 경로" : `경로 ${index + 1}`);
+    const details = document.createElement("small");
+    details.textContent = `${Number.isFinite(Number(route.distance)) ? Math.round(route.distance) + "m" : "거리 정보 없음"} · ${Number.isFinite(Number(route.duration)) ? Math.round(route.duration) + "분" : "시간 정보 없음"}`;
+    const actions = document.createElement("div");
+    actions.className = "agent-route-actions";
+    const viewButton = document.createElement("button");
+    viewButton.type = "button";
+    viewButton.textContent = "지도에서 경로 보기";
+    viewButton.addEventListener("click", () => showAgentRouteOnMap(payload, route, false));
+    const startButton = document.createElement("button");
+    startButton.type = "button";
+    startButton.className = "agent-route-primary";
+    startButton.textContent = "안내 시작";
+    startButton.addEventListener("click", () => showAgentRouteOnMap(payload, route, true));
+    actions.append(viewButton, startButton);
+    card.append(title, details, actions);
+    messageNode.appendChild(card);
+  });
+  agentMessages.scrollTop = agentMessages.scrollHeight;
+}
+
+function agentRoutePointToPlace(point, fallbackName) {
+  const latitude = Number(point?.latitude ?? point?.lat);
+  const longitude = Number(point?.longitude ?? point?.lng);
+  if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) return null;
+  return { place_name: point.name || fallbackName, x: longitude, y: latitude, address_name: point.name || fallbackName, road_address_name: "", source: "agent" };
+}
+
+function agentRoutePath(route) {
+  return (route.path || []).map((point) => ({
+    id: point.id, name: point.name, lat: Number(point.latitude ?? point.lat),
+    lng: Number(point.longitude ?? point.lng), type: point.type || "path",
+  })).filter((point) => Number.isFinite(point.lat) && Number.isFinite(point.lng));
+}
+
+function showAgentRouteOnMap(payload, route, startNavigation = false) {
+  const path = agentRoutePath(route);
+  if (path.length < 2) {
+    appendAgentMessage("경로 좌표가 부족해 지도에 표시할 수 없습니다.", "error");
+    return;
+  }
+  if (navigationMode) stopNavigationTracking({ silent: true });
+  const nextStart = agentRoutePointToPlace(path[0], payload.start?.name || "출발지");
+  const nextEnd = agentRoutePointToPlace(path[path.length - 1], payload.destination?.name || "목적지");
+  if (!nextStart || !nextEnd) {
+    appendAgentMessage("출발지 또는 도착지 좌표를 확인할 수 없습니다.", "error");
+    return;
+  }
+  startPlace = nextStart;
+  endPlace = nextEnd;
+  selectedMobilityType = agentMobilityType?.value || selectedMobilityType;
+  syncQuickRouteInputs();
+  updateStartMarker(startPlace);
+  updateEndMarker(endPlace);
+  const adaptedRoute = {
+    ...route, path, dangerCount: Number(route.dangerCount ?? route.danger_count ?? 0),
+    features: { stairs: Number(route.features?.stairs || 0), ramps: Number(route.features?.ramps || 0), elevators: Number(route.features?.elevators || 0), crosswalks: Number(route.features?.crosswalks || 0) },
+  };
+  currentRouteData = {
+    ok: true,
+    start: payload.start || { name: startPlace.place_name, lat: startPlace.y, lng: startPlace.x },
+    destination: payload.destination || { name: endPlace.place_name, lat: endPlace.y, lng: endPlace.x },
+    routes: [adaptedRoute], selectedRoute: adaptedRoute, source: "agent",
+  };
+  clearDangerZones();
+  drawRoute({ path, colored: true });
+  drawDangerZones(routeDangerZones(adaptedRoute));
+  updateSelectedRouteSheet(adaptedRoute);
+  updateRouteInfo({ distance: adaptedRoute.distance, duration: adaptedRoute.duration * 60 });
+  updateDangerCount(adaptedRoute.dangerCount);
+  updateSafetyRatio(adaptedRoute);
+  document.body.classList.add("route-mode");
+  document.body.classList.remove("route-planner-mode");
+  hideQuickRouteResultList();
+  closeAgentPanel();
+  openPlaceSheet();
+  if (startNavigation) startNavigationTracking();
+}
