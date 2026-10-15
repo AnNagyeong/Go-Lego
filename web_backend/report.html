@@ -685,7 +685,21 @@
         slope: slopeRange.value,
         wheelchairAccess,
         detail: document.getElementById("reportDetail").value,
-        imageData
+        imageData,
+        reporterId: (() => {
+          try {
+            return JSON.parse(localStorage.getItem("accessnavUser") || "null")?.id || null;
+          } catch {
+            return null;
+          }
+        })(),
+        reporterName: (() => {
+          try {
+            return JSON.parse(localStorage.getItem("accessnavUser") || "null")?.nickname || "익명";
+          } catch {
+            return "익명";
+          }
+        })(),
       };
 
       submitReportBtn.disabled = true;

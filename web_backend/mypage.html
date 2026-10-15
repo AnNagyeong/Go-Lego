@@ -73,9 +73,76 @@
           <a href="#" class="mypage-menu-link">고객센터</a>
           <a href="#" class="mypage-menu-link">공지사항</a>
         </nav>
+
+        <section id="adminSection" class="admin-section hidden" aria-label="관리자 - 신규 제보">
+          <h2>관리자 · 신규 제보</h2>
+          <div id="adminReportList" class="admin-report-list">
+            <p class="admin-empty">불러오는 중...</p>
+          </div>
+        </section>
       </div>
     </section>
   </main>
+  <style>
+    .admin-section {
+      margin-top: 20px;
+      padding: 16px;
+      border-radius: 12px;
+      background: #fff7f7;
+      border: 1px solid #fecaca;
+    }
+    .admin-section h2 {
+      margin: 0 0 12px;
+      font-size: 15px;
+      color: #b91c1c;
+    }
+    .admin-report-card {
+      background: #fff;
+      border-radius: 10px;
+      padding: 12px;
+      margin-bottom: 10px;
+      box-shadow: 0 1px 4px rgba(0, 0, 0, 0.08);
+    }
+    .admin-report-card img {
+      width: 100%;
+      max-height: 140px;
+      object-fit: cover;
+      border-radius: 8px;
+      margin-bottom: 8px;
+    }
+    .admin-report-meta {
+      font-size: 12px;
+      color: #666;
+      margin: 4px 0;
+    }
+    .admin-report-actions {
+      display: flex;
+      gap: 8px;
+      margin-top: 8px;
+    }
+    .admin-report-actions button {
+      flex: 1;
+      padding: 8px;
+      border: none;
+      border-radius: 8px;
+      font-size: 13px;
+      cursor: pointer;
+    }
+    .admin-approve-btn {
+      background: #16a34a;
+      color: #fff;
+    }
+    .admin-reject-btn {
+      background: #e5e7eb;
+      color: #374151;
+    }
+    .admin-empty {
+      font-size: 13px;
+      color: #888;
+      text-align: center;
+      padding: 12px 0;
+    }
+  </style>
   <script>
     const token = localStorage.getItem("accessnavToken");
     const savedUser = localStorage.getItem("accessnavUser");
@@ -116,6 +183,75 @@
         localStorage.removeItem("accessnavUser");
         location.replace("index.html");
       });
+
+      if (user.userType === "Admin") {
+        initAdminSection(user);
+      }
+    }
+
+    function initAdminSection(user) {
+      const adminSection = document.getElementById("adminSection");
+      const adminReportList = document.getElementById("adminReportList");
+      adminSection.classList.remove("hidden");
+
+      async function loadPendingReports() {
+        adminReportList.innerHTML = '<p class="admin-empty">불러오는 중...</p>';
+        try {
+          const response = await fetch(
+            `/api/accessibility-reports?status=pending&adminId=${encodeURIComponent(user.id)}`
+          );
+          const data = await response.json();
+          if (!data.ok) throw new Error(data.error || "목록을 불러오지 못했습니다.");
+          renderReports(data.reports);
+        } catch (error) {
+          adminReportList.innerHTML = `<p class="admin-empty">${error.message}</p>`;
+        }
+      }
+
+      function renderReports(reports) {
+        if (!reports.length) {
+          adminReportList.innerHTML = '<p class="admin-empty">새로 들어온 제보가 없습니다.</p>';
+          return;
+        }
+
+        adminReportList.innerHTML = "";
+        reports.forEach((report) => {
+          const card = document.createElement("div");
+          card.className = "admin-report-card";
+          card.innerHTML = `
+            ${report.imageData ? `<img src="${report.imageData}" alt="제보 사진" />` : ""}
+            <strong>${report.placeName || "위치 미상"}</strong>
+            <p class="admin-report-meta">${report.type || "유형 미지정"} · 경사 ${report.slope || "-"}% · 제보자: ${report.reporterName || "익명"}</p>
+            <p class="admin-report-meta">${report.detail || ""}</p>
+            <div class="admin-report-actions">
+              <button type="button" class="admin-approve-btn" data-id="${report.id}">승인</button>
+              <button type="button" class="admin-reject-btn" data-id="${report.id}">반려</button>
+            </div>
+          `;
+
+          card.querySelector(".admin-approve-btn").addEventListener("click", () => reviewReport(report.id, "approve"));
+          card.querySelector(".admin-reject-btn").addEventListener("click", () => reviewReport(report.id, "reject"));
+
+          adminReportList.appendChild(card);
+        });
+      }
+
+      async function reviewReport(id, action) {
+        try {
+          const response = await fetch(`/api/accessibility-reports/${id}/${action}`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ adminId: user.id }),
+          });
+          const data = await response.json();
+          if (!data.ok) throw new Error(data.error || "처리에 실패했습니다.");
+          loadPendingReports();
+        } catch (error) {
+          alert(error.message);
+        }
+      }
+
+      loadPendingReports();
     }
   </script>
 </body>

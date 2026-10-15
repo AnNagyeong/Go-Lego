@@ -148,6 +148,7 @@ const volunteerRequestMapEl = document.getElementById("volunteerRequestMap");
 const volunteerRequesterLocation = document.getElementById("volunteerRequesterLocation");
 const acceptVolunteerRequestBtn = document.getElementById("acceptVolunteerRequestBtn");
 const declineVolunteerRequestBtn = document.getElementById("declineVolunteerRequestBtn");
+const volunteerRequesterName = document.getElementById("volunteerRequesterName");
 
 const loginNavBtn = document.getElementById("loginNavBtn");
 const cameraNavBtn = document.getElementById("cameraNavBtn");
@@ -163,6 +164,9 @@ let lastWeatherKey = "";
 let volunteerPreviewMap = null;
 let volunteerPreviewMarker = null;
 let volunteerNearbyMarkers = [];
+let helpSocket = null;
+let currentHelpRequestId = null;
+let activeIncomingHelpRequest = null;
 let activeQuickRouteRole = "start";
 let quickRouteSearchTimer = null;
 let quickRouteSearchId = 0;
@@ -320,6 +324,12 @@ if (socialHelpBtn) {
   socialHelpBtn.addEventListener("click", openSocialHelpPanel);
 }
 
+// 로그인한 사용자는 긴급 도움 패널을 열지 않아도
+// 주변의 다른 사용자가 보낸 도움 요청을 실시간으로 받을 수 있어야 하므로 미리 연결해둔다.
+if (getStoredAuthUser()?.id) {
+  initHelpSocket();
+}
+
 if (closeSocialHelpBtn) {
   closeSocialHelpBtn.addEventListener("click", closeSocialHelpPanel);
 }
@@ -378,6 +388,17 @@ function openSocialHelpPanel() {
 
 function closeSocialHelpPanel() {
   if (!socialHelpPanel) return;
+
+  if (currentHelpRequestId && helpSocket) {
+    helpSocket.emit("help:cancel", { requestId: currentHelpRequestId });
+    currentHelpRequestId = null;
+  }
+
+  if (requestSocialHelpBtn) {
+    requestSocialHelpBtn.disabled = false;
+    requestSocialHelpBtn.textContent = "주변에 도움 요청하기";
+  }
+
   socialHelpPanel.classList.add("hidden");
 }
 
@@ -396,8 +417,78 @@ function updateSocialHelpLocationText() {
   });
 }
 
+function initHelpSocket() {
+  if (helpSocket || typeof io !== "function") return helpSocket;
+
+  helpSocket = io();
+
+  helpSocket.on("connect", () => {
+    const user = getStoredAuthUser();
+    if (user?.id) {
+      helpSocket.emit("auth:register", { userId: user.id, nickname: user.nickname });
+    }
+  });
+
+  // 내가 요청한 도움이 다른 사용자에게 수락됐을 때 (요청자 화면)
+  helpSocket.on("help:accepted", ({ id, volunteerName }) => {
+    if (id !== currentHelpRequestId) return;
+    if (socialHelpStatus) {
+      socialHelpStatus.textContent = `${volunteerName || "봉사자"}님이 도움 요청을 수락했습니다.`;
+      socialHelpStatus.classList.remove("matching");
+    }
+  });
+
+  // 다른 사용자의 도움 요청이 나에게 실시간으로 들어왔을 때 (봉사자 화면)
+  helpSocket.on("help:incoming", (request) => {
+    if (!request?.id) return;
+    const myUser = getStoredAuthUser();
+    if (myUser?.id && request.requesterId === myUser.id) return; // 본인 요청은 무시
+
+    activeIncomingHelpRequest = request;
+    showIncomingHelpRequest(request);
+  });
+
+  // 다른 봉사자가 먼저 수락했거나 요청자가 취소해서 더 이상 유효하지 않을 때
+  helpSocket.on("help:closed", ({ id }) => {
+    if (activeIncomingHelpRequest?.id === id) {
+      activeIncomingHelpRequest = null;
+      volunteerRequestPanel?.classList.add("hidden");
+    }
+  });
+
+  return helpSocket;
+}
+
+function showIncomingHelpRequest(request) {
+  if (!volunteerRequestPanel) return;
+
+  if (volunteerRequesterName) {
+    volunteerRequesterName.textContent = request.requesterName || "익명";
+  }
+  if (volunteerRequesterLocation) {
+    volunteerRequesterLocation.textContent = request.locationLabel || "위치 정보 없음";
+  }
+
+  volunteerRequestPanel.classList.remove("hidden");
+
+  if (Number.isFinite(request.lat) && Number.isFinite(request.lng)) {
+    renderVolunteerRequestMap(new kakao.maps.LatLng(request.lat, request.lng));
+  } else {
+    renderVolunteerRequestMap();
+  }
+}
+
 function requestSocialHelp() {
   updateSocialHelpLocationText();
+  const socket = initHelpSocket();
+  const user = getStoredAuthUser();
+
+  if (!socket || !user?.id) {
+    if (socialHelpStatus) {
+      socialHelpStatus.textContent = "로그인 후 이용할 수 있습니다.";
+    }
+    return;
+  }
 
   if (socialHelpStatus) {
     socialHelpStatus.textContent = "주변 봉사자에게 요청을 보내는 중";
@@ -409,26 +500,37 @@ function requestSocialHelp() {
     requestSocialHelpBtn.textContent = "매칭 요청 완료";
   }
 
-  setTimeout(() => {
-    if (socialHelpStatus) {
-      socialHelpStatus.textContent = "요청이 접수되었습니다. 가까운 봉사자 응답을 기다리는 중";
-    }
-    showVolunteerRequestPreview();
-  }, 900);
-}
+  const position = currentLocationPosition || map.getCenter();
 
-function showVolunteerRequestPreview() {
-  if (!volunteerRequestPanel) return;
+  getSocialHelpLocationLabel().then((locationLabel) => {
+    const payload = {
+      requesterId: user.id,
+      requesterName: user.nickname || "익명",
+      lat: position.getLat(),
+      lng: position.getLng(),
+      locationLabel,
+      mobilityType: selectedMobilityType,
+    };
 
-  if (volunteerRequesterLocation) {
-    volunteerRequesterLocation.textContent = "위치 확인 중";
-    getSocialHelpLocationLabel().then((locationText) => {
-      volunteerRequesterLocation.textContent = locationText;
+    socket.emit("help:request", payload, (result) => {
+      if (!result?.ok) {
+        if (socialHelpStatus) {
+          socialHelpStatus.textContent = result?.error || "요청 전송에 실패했습니다.";
+          socialHelpStatus.classList.remove("matching");
+        }
+        if (requestSocialHelpBtn) {
+          requestSocialHelpBtn.disabled = false;
+          requestSocialHelpBtn.textContent = "주변에 도움 요청하기";
+        }
+        return;
+      }
+
+      currentHelpRequestId = result.id;
+      if (socialHelpStatus) {
+        socialHelpStatus.textContent = "요청이 접수되었습니다. 가까운 봉사자 응답을 기다리는 중";
+      }
     });
-  }
-
-  volunteerRequestPanel.classList.remove("hidden");
-  renderVolunteerRequestMap();
+  });
 }
 
 async function getSocialHelpLocationLabel() {
@@ -494,10 +596,10 @@ function getAddressLabelFromMapCenter() {
   });
 }
 
-function renderVolunteerRequestMap() {
+function renderVolunteerRequestMap(requestPosition) {
   if (!volunteerRequestMapEl) return;
 
-  const position = currentLocationPosition || map.getCenter();
+  const position = requestPosition || currentLocationPosition || map.getCenter();
   if (!position) return;
 
   setTimeout(() => {
@@ -564,13 +666,29 @@ function renderVolunteerNearbyBuildingMarkers(position) {
 
 function respondToVolunteerRequest(status) {
   if (!volunteerRequestPanel) return;
+  const request = activeIncomingHelpRequest;
+  const socket = initHelpSocket();
+  const user = getStoredAuthUser();
 
   if (status === "accepted") {
-    alert("지원 요청을 수락했습니다. 신청자에게 이동 중 알림이 전송됩니다.");
+    if (socket && user?.id && request?.id) {
+      socket.emit(
+        "help:accept",
+        { requestId: request.id, volunteerId: user.id, volunteerName: user.nickname || "봉사자" },
+        (result) => {
+          if (!result?.ok) {
+            alert(result?.error || "이미 다른 사용자가 응답한 요청입니다.");
+          } else {
+            alert("지원 요청을 수락했습니다. 신청자에게 알림이 전송됩니다.");
+          }
+        }
+      );
+    }
   } else {
     alert("지원 요청을 거절했습니다. 다른 주변 사용자에게 요청이 유지됩니다.");
   }
 
+  activeIncomingHelpRequest = null;
   volunteerRequestPanel.classList.add("hidden");
 }
 
@@ -1494,6 +1612,8 @@ async function submitInlineReport() {
   submitButton.disabled = true;
   submitButton.textContent = "등록 중...";
 
+  const reportUser = getStoredAuthUser();
+
   try {
     const response = await fetch("/api/accessibility-reports", {
       method: "POST",
@@ -1510,6 +1630,8 @@ async function submitInlineReport() {
         slope: slopeInput?.value || "10",
         detail: detailInput?.value || "",
         imageData,
+        reporterId: reportUser?.id || null,
+        reporterName: reportUser?.nickname || "익명",
       }),
     });
     const data = await response.json();
@@ -1899,6 +2021,60 @@ function searchNearbyPlacesFromPosition(keyword, currentPosition) {
     placesService.keywordSearch(keyword, callback, options);
   }
 }
+
+let approvedReportMarkers = [];
+let approvedReportInfoWindow = null;
+
+async function loadApprovedAccessibilityReports() {
+  try {
+    const response = await fetch("/api/accessibility-reports?status=approved");
+    const data = await response.json();
+    if (!data.ok) return;
+
+    approvedReportMarkers.forEach((marker) => marker.setMap(null));
+    approvedReportMarkers = [];
+
+    data.reports.forEach((report) => {
+      const lat = Number(report.lat);
+      const lng = Number(report.lng);
+      if (!Number.isFinite(lat) || !Number.isFinite(lng)) return;
+
+      const position = new kakao.maps.LatLng(lat, lng);
+      const marker = new kakao.maps.Marker({
+        map,
+        position,
+        title: `${report.placeName || "위험 구간"} (검증된 제보)`,
+        image: new kakao.maps.MarkerImage(
+          "data:image/svg+xml;charset=UTF-8," +
+            encodeURIComponent(
+              '<svg xmlns="http://www.w3.org/2000/svg" width="32" height="38" viewBox="0 0 32 38"><path d="M16 0C7.2 0 0 7.2 0 16c0 11 16 22 16 22s16-11 16-22C32 7.2 24.8 0 16 0z" fill="#ef4444"/><text x="16" y="21" font-size="16" text-anchor="middle" fill="white" font-family="sans-serif">!</text></svg>'
+            ),
+          new kakao.maps.Size(32, 38),
+          { offset: new kakao.maps.Point(16, 38) }
+        ),
+      });
+
+      kakao.maps.event.addListener(marker, "click", () => {
+        approvedReportInfoWindow?.close();
+        approvedReportInfoWindow = new kakao.maps.InfoWindow({
+          content: `
+            <div style="padding:8px 10px; font-size:13px; line-height:1.5; max-width:220px;">
+              <strong>${report.placeName || "검증된 위험 구간"}</strong><br />
+              <span>${report.type || ""}${report.type ? " · " : ""}${report.detail || ""}</span>
+            </div>
+          `,
+        });
+        approvedReportInfoWindow.open(map, marker);
+      });
+
+      approvedReportMarkers.push(marker);
+    });
+  } catch (error) {
+    console.warn("승인된 제보 로딩 실패:", error);
+  }
+}
+
+loadApprovedAccessibilityReports();
 
 function drawNearbyPlaceMarkers(places) {
   const bounds = new kakao.maps.LatLngBounds();

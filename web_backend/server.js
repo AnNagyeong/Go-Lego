@@ -7,8 +7,14 @@ const path = require("path");
 const fs = require("fs/promises");
 const mysql = require("mysql2/promise");
 const { randomBytes, randomUUID, scryptSync, timingSafeEqual } = require("crypto");
+const http = require("http");
+const { Server: SocketIOServer } = require("socket.io");
 
 const app = express();
+const httpServer = http.createServer(app);
+const io = new SocketIOServer(httpServer, {
+  cors: { origin: "*" },
+});
 const PORT = process.env.PORT || 3000;
 const MAX_NEARBY_ROUTE_TARGET_DISTANCE = 150;
 const DATA_DIR = path.join(__dirname, "data");
@@ -58,6 +64,287 @@ const mapServiceDb = mysql.createPool({
     process.env.DB_PASS,
   database: process.env.MAPSERVICE_DB_NAME || "barrier_free_db",
 });
+
+// ================= 긴급 도움 요청 (Socket.io) =================
+
+async function ensureEmergencyHelpTable() {
+  await db.execute(`
+    CREATE TABLE IF NOT EXISTS emergency_help_requests (
+      id VARCHAR(36) PRIMARY KEY,
+      requester_id VARCHAR(64) NOT NULL,
+      requester_name VARCHAR(100),
+      lat DOUBLE NOT NULL,
+      lng DOUBLE NOT NULL,
+      location_label VARCHAR(255),
+      mobility_type VARCHAR(32),
+      status ENUM('pending', 'accepted', 'declined', 'cancelled', 'completed') NOT NULL DEFAULT 'pending',
+      volunteer_id VARCHAR(64),
+      volunteer_name VARCHAR(100),
+      created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      accepted_at DATETIME NULL,
+      closed_at DATETIME NULL
+    )
+  `);
+}
+
+// userId -> Set of socket.id (한 사용자가 여러 탭/기기로 접속할 수 있어 Set으로 관리)
+const userSocketRoom = (userId) => `user:${userId}`;
+
+io.on("connection", (socket) => {
+  socket.data.userId = null;
+
+  // 로그인한 사용자가 소켓 연결 직후 자신의 개인 room에 join
+  socket.on("auth:register", ({ userId, nickname } = {}) => {
+    if (!userId) return;
+    socket.data.userId = userId;
+    socket.data.nickname = nickname || null;
+    socket.join(userSocketRoom(userId));
+  });
+
+  // 1) 도움 요청 생성 (요청자 -> 서버 -> 주변에 있는 모든 로그인 사용자)
+  socket.on("help:request", async (payload = {}, ack) => {
+    try {
+      const id = payload.id || randomUUID();
+      const requesterId = String(payload.requesterId || socket.data.userId || "");
+      if (!requesterId) throw new Error("requesterId가 없습니다.");
+
+      const record = {
+        id,
+        requester_id: requesterId,
+        requester_name: payload.requesterName || "익명",
+        lat: Number(payload.lat),
+        lng: Number(payload.lng),
+        location_label: payload.locationLabel || "",
+        mobility_type: payload.mobilityType || "walking",
+      };
+
+      await db.execute(
+        `INSERT INTO emergency_help_requests
+          (id, requester_id, requester_name, lat, lng, location_label, mobility_type, status)
+         VALUES (?, ?, ?, ?, ?, ?, ?, 'pending')`,
+        [
+          record.id,
+          record.requester_id,
+          record.requester_name,
+          record.lat,
+          record.lng,
+          record.location_label,
+          record.mobility_type,
+        ]
+      );
+
+      // 요청자 본인을 제외한 현재 접속 중인 모든 사용자에게 실시간 전달
+      socket.broadcast.emit("help:incoming", {
+        id: record.id,
+        requesterId: record.requester_id,
+        requesterName: record.requester_name,
+        lat: record.lat,
+        lng: record.lng,
+        locationLabel: record.location_label,
+        mobilityType: record.mobility_type,
+        createdAt: new Date().toISOString(),
+      });
+
+      if (typeof ack === "function") ack({ ok: true, id: record.id });
+    } catch (error) {
+      console.error("help:request 처리 실패:", error);
+      if (typeof ack === "function") {
+        ack({ ok: false, error: error.message || "요청 처리 중 오류가 발생했습니다." });
+      }
+    }
+  });
+
+  // 2) 봉사자가 요청을 수락
+  socket.on("help:accept", async ({ requestId, volunteerId, volunteerName } = {}, ack) => {
+    try {
+      const [rows] = await db.execute(
+        `SELECT * FROM emergency_help_requests WHERE id = ?`,
+        [requestId]
+      );
+      const request = rows[0];
+      if (!request) throw new Error("요청을 찾을 수 없습니다.");
+      if (request.status !== "pending") {
+        if (typeof ack === "function") ack({ ok: false, error: "이미 처리된 요청입니다." });
+        return;
+      }
+
+      await db.execute(
+        `UPDATE emergency_help_requests
+         SET status = 'accepted', volunteer_id = ?, volunteer_name = ?, accepted_at = NOW()
+         WHERE id = ?`,
+        [volunteerId || null, volunteerName || null, requestId]
+      );
+
+      socket.join(userSocketRoom(volunteerId));
+
+      // 요청자에게 수락 알림
+      io.to(userSocketRoom(request.requester_id)).emit("help:accepted", {
+        id: requestId,
+        volunteerId,
+        volunteerName: volunteerName || "봉사자",
+      });
+
+      // 다른 봉사자들에게는 이 요청이 마감됐음을 알려 목록/알림에서 지우게 함
+      socket.broadcast.emit("help:closed", { id: requestId, reason: "accepted" });
+
+      if (typeof ack === "function") ack({ ok: true });
+    } catch (error) {
+      console.error("help:accept 처리 실패:", error);
+      if (typeof ack === "function") {
+        ack({ ok: false, error: error.message || "수락 처리 중 오류가 발생했습니다." });
+      }
+    }
+  });
+
+  // 3) 요청자가 요청을 취소
+  socket.on("help:cancel", async ({ requestId } = {}, ack) => {
+    try {
+      await db.execute(
+        `UPDATE emergency_help_requests
+         SET status = 'cancelled', closed_at = NOW()
+         WHERE id = ? AND status = 'pending'`,
+        [requestId]
+      );
+      socket.broadcast.emit("help:closed", { id: requestId, reason: "cancelled" });
+      if (typeof ack === "function") ack({ ok: true });
+    } catch (error) {
+      console.error("help:cancel 처리 실패:", error);
+      if (typeof ack === "function") ack({ ok: false, error: error.message });
+    }
+  });
+
+  // 4) 매칭 성사 이후 실시간 위치 공유 (양방향 중계)
+  socket.on("help:location", ({ targetUserId, requestId, lat, lng } = {}) => {
+    if (!targetUserId) return;
+    io.to(userSocketRoom(targetUserId)).emit("help:location", {
+      requestId,
+      lat,
+      lng,
+      fromUserId: socket.data.userId,
+    });
+  });
+
+  // 5) 매칭 성사 이후 간단한 메시지 전달
+  socket.on("help:message", ({ targetUserId, requestId, text } = {}) => {
+    if (!targetUserId || !text) return;
+    io.to(userSocketRoom(targetUserId)).emit("help:message", {
+      requestId,
+      text: String(text).slice(0, 500),
+      fromUserId: socket.data.userId,
+      sentAt: new Date().toISOString(),
+    });
+  });
+});
+
+// ================= 접근성 제보 (관리자 승인) =================
+
+async function ensureAccessibilityReportsTable() {
+  await db.execute(`
+    CREATE TABLE IF NOT EXISTS accessibility_reports (
+      id VARCHAR(36) PRIMARY KEY,
+      reporter_id VARCHAR(64),
+      reporter_name VARCHAR(100),
+      place_name VARCHAR(255),
+      address VARCHAR(255),
+      lat DOUBLE,
+      lng DOUBLE,
+      type VARCHAR(64),
+      slope VARCHAR(16),
+      wheelchair_access VARCHAR(32),
+      detail TEXT,
+      image_data LONGTEXT,
+      status ENUM('pending', 'approved', 'rejected') NOT NULL DEFAULT 'pending',
+      reviewed_by VARCHAR(64),
+      reviewed_at DATETIME NULL,
+      created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+}
+
+// 이 프로젝트는 토큰을 서버에서 검증하지 않는 구조라(로그인 시 매번 새로 발급되는 임시 문자열),
+// 관리자 여부도 클라이언트가 넘겨준 userId를 auth-users.json에서 조회해 판단한다.
+// (실서비스라면 세션/JWT 검증이 필요하지만, 지금 로그인 구조 전체가 그렇지 않아 다른 API들과 동일한 신뢰 수준을 맞춘 것)
+async function isAdminUser(userId) {
+  if (!userId) return false;
+  const users = await readAuthUsers();
+  const user = users.find((item) => item.id === userId);
+  return Boolean(user && user.userType === "Admin");
+}
+
+function reportRowToJson(row) {
+  return {
+    id: row.id,
+    reporterId: row.reporter_id,
+    reporterName: row.reporter_name,
+    placeName: row.place_name,
+    address: row.address,
+    lat: row.lat,
+    lng: row.lng,
+    type: row.type,
+    slope: row.slope,
+    wheelchairAccess: row.wheelchair_access,
+    detail: row.detail,
+    imageData: row.image_data,
+    status: row.status,
+    reviewedBy: row.reviewed_by,
+    reviewedAt: row.reviewed_at,
+    createdAt: row.created_at,
+  };
+}
+
+async function handleListAccessibilityReports(req, res) {
+  try {
+    const status = String(req.query.status || "approved");
+
+    if (status === "pending" || status === "all") {
+      const isAdmin = await isAdminUser(req.query.adminId);
+      if (!isAdmin) {
+        return res.status(403).json({ ok: false, error: "관리자만 조회할 수 있습니다." });
+      }
+    }
+
+    const [rows] =
+      status === "all"
+        ? await db.execute(`SELECT * FROM accessibility_reports ORDER BY created_at DESC`)
+        : await db.execute(
+            `SELECT * FROM accessibility_reports WHERE status = ? ORDER BY created_at DESC`,
+            [status]
+          );
+
+    return res.json({ ok: true, reports: rows.map(reportRowToJson) });
+  } catch (error) {
+    console.error("접근성 제보 목록 조회 실패:", error);
+    return res.status(500).json({ ok: false, error: "제보 목록을 불러오지 못했습니다." });
+  }
+}
+
+async function handleReviewAccessibilityReport(req, res, nextStatus) {
+  try {
+    const { id } = req.params;
+    const adminId = req.body.adminId;
+
+    const isAdmin = await isAdminUser(adminId);
+    if (!isAdmin) {
+      return res.status(403).json({ ok: false, error: "관리자만 처리할 수 있습니다." });
+    }
+
+    const [result] = await db.execute(
+      `UPDATE accessibility_reports
+       SET status = ?, reviewed_by = ?, reviewed_at = NOW()
+       WHERE id = ? AND status = 'pending'`,
+      [nextStatus, adminId, id]
+    );
+
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ ok: false, error: "이미 처리됐거나 존재하지 않는 제보입니다." });
+    }
+
+    return res.json({ ok: true });
+  } catch (error) {
+    console.error("접근성 제보 처리 실패:", error);
+    return res.status(500).json({ ok: false, error: "처리 중 오류가 발생했습니다." });
+  }
+}
 
 function uuidToBuffer(uuid) {
   return Buffer.from(uuid.replace(/-/g, ""), "hex");
@@ -760,16 +1047,12 @@ async function handlePlacePhoto(req, res) {
       const cached = googlePhotoCache.get(cacheKey);
       return res.json({
         ...cached,
-        photoUri: databasePhotos[0]?.photoUri || cached.photoUri || null,
-        photos: [...databasePhotos, ...(cached.photos || [])],
+        photoUri: cached.photoUri || databasePhotos[0]?.photoUri || null,
+        photos: [...(cached.photos || []), ...databasePhotos],
       });
     }
 
-    // 정확한 POI 사진이 없을 때는 Google에서도 세부 노드명(예: 횡단보도_1_B)
-    // 자체를 검색하지 않고, 건물/장소의 대표명으로 검색해 관련 대표 사진을 찾는다.
-    const rawPlaceName = String(name || "").trim();
-    const googleFallbackName = rawPlaceName.split("_")[0].trim() || rawPlaceName;
-    const textQuery = [googleFallbackName, address].filter(Boolean).join(" ");
+    const textQuery = [name, address].filter(Boolean).join(" ");
     const searchBody = {
       textQuery,
       languageCode: "ko",
@@ -796,7 +1079,7 @@ async function handlePlacePhoto(req, res) {
           "Content-Type": "application/json",
           "X-Goog-Api-Key": GOOGLE_PLACES_API_KEY,
           "X-Goog-FieldMask":
-            "places.id,places.displayName,places.photos,places.formattedAddress,places.location",
+            "places.id,places.displayName,places.photos,places.formattedAddress",
         },
         body: JSON.stringify(searchBody),
       }
@@ -811,13 +1094,7 @@ async function handlePlacePhoto(req, res) {
     }
 
     const searchData = JSON.parse(searchText);
-    const candidates = Array.isArray(searchData.places) ? searchData.places : [];
-    const place = selectVerifiedGooglePlace(candidates, {
-      name: googleFallbackName,
-      address,
-      lat,
-      lng,
-    });
+    const place = searchData.places?.[0];
     const googlePhotos = place?.photos?.slice(0, 5) || [];
 
     if (!googlePhotos.length) {
@@ -863,8 +1140,8 @@ async function handlePlacePhoto(req, res) {
     googlePhotoCache.set(cacheKey, result);
     return res.json({
       ...result,
-      photoUri: databasePhotos[0]?.photoUri || result.photoUri || null,
-      photos: [...databasePhotos, ...resolvedGooglePhotos],
+      photoUri: result.photoUri || databasePhotos[0]?.photoUri || null,
+      photos: [...resolvedGooglePhotos, ...databasePhotos],
     });
   } catch (error) {
     console.error("Google place photo error:", error);
@@ -875,198 +1152,46 @@ async function handlePlacePhoto(req, res) {
   }
 }
 
-function selectVerifiedGooglePlace(candidates, target) {
-  const targetName = normalizeGooglePlaceText(target.name);
-  const targetAddress = normalizeGooglePlaceText(target.address);
-  const hasTargetPoint = !Number.isNaN(target.lat) && !Number.isNaN(target.lng);
-
-  return candidates
-    .map((place) => {
-      const placeName = normalizeGooglePlaceText(place.displayName?.text);
-      const placeAddress = normalizeGooglePlaceText(place.formattedAddress);
-      const nameMatch =
-        Boolean(targetName) &&
-        (placeName === targetName ||
-          placeName.includes(targetName) ||
-          targetName.includes(placeName));
-      const addressMatch =
-        Boolean(targetAddress) &&
-        Boolean(placeAddress) &&
-        (placeAddress.includes(targetAddress) || targetAddress.includes(placeAddress));
-
-      let distance = Infinity;
-      if (hasTargetPoint && place.location) {
-        distance = getDistance(
-          target.lat,
-          target.lng,
-          Number(place.location.latitude),
-          Number(place.location.longitude)
-        );
-      }
-
-      let score = 0;
-      if (nameMatch) score += 100;
-      if (addressMatch) score += 60;
-      if (distance <= 120) score += 50;
-      else if (distance <= 300) score += 20;
-      else if (hasTargetPoint && Number.isFinite(distance)) score -= 100;
-
-      return { place, score, distance };
-    })
-    .filter((candidate) => {
-      if (candidate.score < 100) return false;
-      if (hasTargetPoint && Number.isFinite(candidate.distance) && candidate.distance > 300) {
-        return false;
-      }
-      return true;
-    })
-    .sort((a, b) => b.score - a.score || a.distance - b.distance)[0]?.place || null;
-}
-
-function normalizeGooglePlaceText(value) {
-  return String(value || "")
-    .toLowerCase()
-    .replace(/대한민국|서울특별시|서울시|성동구/g, "")
-    .replace(/한양여자대학교|한양여대/g, "한양여대")
-    .replace(/[\s,.-]+/g, "");
-}
-
 async function findMapServicePlacePhotos(id, rawName) {
   try {
-    const poiId = String(id || "").trim();
-
-    // MapService POI 사진은 이름이 아니라 정확한 poi_id를 기준으로 매칭한다.
-    // 이름 일부 검색은 "정보문화관_횡단보도_1_A"가 "정보문화관" 건물 사진으로
-    // 잘못 연결되는 문제를 만들 수 있으므로, ID가 전달된 경우에는 이름 검색을 하지 않는다.
-    if (poiId) {
-      const [rows] = await mapServiceDb.execute(
-        `
-        SELECT poi_id, poi_name, poi_type, photo_url
-        FROM poi
-        WHERE poi_id = ?
-        LIMIT 1
-        `,
-        [poiId]
-      );
-
-      const row = rows[0];
-      if (row) {
-        let photoUri = normalizeMapServicePhotoUrl(row.photo_url);
-
-        // DB photo_url이 아직 없는 기존 데이터는
-        // node_<poi_id> 파일명 규칙으로 같은 POI의 사진을 찾는다.
-        if (!photoUri) {
-          const inferredName = `node_${row.poi_id}.jpg`;
-          try {
-            await fs.access(path.join(MAPSERVICE_PANORAMAS_DIR, inferredName));
-            photoUri = `/panoramas/${inferredName}`;
-          } catch {
-            photoUri = null;
-          }
-        }
-
-        if (photoUri) {
-          return [
-            {
-              photoUri: resolveMapServicePhotoUrl(photoUri),
-              source: "mapservice",
-              label:
-                row.poi_type === "entrance"
-                  ? `${row.poi_name} 입구`
-                  : row.poi_name,
-              attributions: [],
-            },
-          ];
-        }
-
-        // 건물 자체에 사진이 없으면, building_entrance 관계로 연결된
-        // 출입구 중 사진이 있는 것을 대표 사진으로 사용한다.
-        const [entranceRows] = await mapServiceDb.execute(
-          `
-          SELECT e.poi_id, e.poi_name, e.poi_type, e.photo_url
-          FROM building_entrance be
-          JOIN poi e ON e.poi_id = be.entrance_poi_id
-          WHERE be.building_poi_id = ?
-          ORDER BY CASE WHEN e.poi_type = 'entrance' THEN 0 ELSE 1 END, e.poi_name
-          LIMIT 10
-          `,
-          [row.poi_id]
-        );
-
-        for (const entranceRow of entranceRows) {
-          let entrancePhotoUri = normalizeMapServicePhotoUrl(entranceRow.photo_url);
-          if (!entrancePhotoUri) {
-            const inferredEntranceName = `node_${entranceRow.poi_id}.jpg`;
-            try {
-              await fs.access(
-                path.join(MAPSERVICE_PANORAMAS_DIR, inferredEntranceName)
-              );
-              entrancePhotoUri = `/panoramas/${inferredEntranceName}`;
-            } catch {
-              entrancePhotoUri = null;
-            }
-          }
-
-          if (entrancePhotoUri) {
-            return [
-              {
-                photoUri: resolveMapServicePhotoUrl(entrancePhotoUri),
-                source: "mapservice-building-fallback",
-                label: `${entranceRow.poi_name} 입구`,
-                attributions: [],
-              },
-            ];
-          }
-        }
-      }
-
-      // 정확한 poi_id에 사진이 없는 경우 다른 POI의 DB 사진을 이름으로
-      // 가져오지 않는다. 잘못된 건물 사진이 섞이는 것을 막고 Google fallback으로 넘긴다.
-      return [];
-    }
-
-    // poi_id가 없는 레거시/외부 요청만 정확한 이름 기준으로 제한적으로 fallback한다.
-    const rawPoiName = String(rawName || "").trim();
-    const normalizedName = normalizePlaceName(rawPoiName);
-    if (!rawPoiName || !normalizedName) return [];
-
+    const baseName = String(rawName || "")
+      .split("_")[0]
+      .replace(/한양여자대학교|한양여대/g, "")
+      .trim();
+    const likeName = `%${baseName}%`;
     const [rows] = await mapServiceDb.execute(
       `
-      SELECT poi_id, poi_name, poi_type, photo_url
-      FROM poi
-      WHERE poi_name = ?
-         OR REPLACE(REPLACE(REPLACE(poi_name, '_', ''), ' ', ''), '-', '') = ?
-      ORDER BY poi_name = ? DESC
-      LIMIT 1
+      SELECT DISTINCT p.poi_id, p.poi_name, p.poi_type, p.photo_url
+      FROM poi p
+      LEFT JOIN building_entrance be
+        ON p.poi_id COLLATE utf8mb4_unicode_ci = be.entrance_poi_id
+      LEFT JOIN poi building
+        ON building.poi_id COLLATE utf8mb4_unicode_ci = be.building_poi_id
+      WHERE (p.poi_id = ? OR p.poi_name LIKE ? OR building.poi_id = ? OR building.poi_name LIKE ?)
+      ORDER BY CASE WHEN p.poi_type = 'building' THEN 0 WHEN p.poi_type = 'entrance' THEN 1 ELSE 2 END
+      LIMIT 8
       `,
-      [rawPoiName, normalizedName, rawPoiName]
+      [id, likeName, id, likeName]
     );
-
-    const row = rows[0];
-    if (!row) return [];
-
-    let photoUri = normalizeMapServicePhotoUrl(row.photo_url);
-    if (!photoUri) {
-      const inferredName = `node_${row.poi_id}.jpg`;
-      try {
-        await fs.access(path.join(MAPSERVICE_PANORAMAS_DIR, inferredName));
-        photoUri = `/panoramas/${inferredName}`;
-      } catch {
-        return [];
+    const photos = await Promise.all(rows.map(async (row) => {
+      let photoUri = normalizeMapServicePhotoUrl(row.photo_url);
+      if (!photoUri) {
+        const inferredName = `node_${row.poi_id}.jpg`;
+        try {
+          await fs.access(path.join(MAPSERVICE_PANORAMAS_DIR, inferredName));
+          photoUri = `/panoramas/${inferredName}`;
+        } catch {
+          return null;
+        }
       }
-    }
-
-    return [
-      {
-        photoUri: resolveMapServicePhotoUrl(photoUri),
+      return {
+        photoUri,
         source: "mapservice",
-        label:
-          row.poi_type === "entrance"
-            ? `${row.poi_name} 입구`
-            : row.poi_name,
+        label: row.poi_type === "entrance" ? `${row.poi_name} 입구` : row.poi_name,
         attributions: [],
-      },
-    ];
+      };
+    }));
+    return photos.filter(Boolean);
   } catch (error) {
     console.warn("MapService place photo lookup failed:", error.message);
     return [];
@@ -1080,14 +1205,6 @@ function normalizeMapServicePhotoUrl(value) {
   if (photoUrl.startsWith("/")) return photoUrl;
   if (photoUrl.startsWith("panoramas/") || photoUrl.startsWith("images/")) return `/${photoUrl}`;
   return `/panoramas/${path.basename(photoUrl)}`;
-}
-
-function resolveMapServicePhotoUrl(photoUrl) {
-  if (!photoUrl) return null;
-  if (/^https?:\/\//i.test(photoUrl) || photoUrl.startsWith("data:")) {
-    return photoUrl;
-  }
-  return `${MAPSERVICE_BASE_URL}${photoUrl.startsWith("/") ? "" : "/"}${photoUrl}`;
 }
 
 function clampNumber(value, min, max, fallback) {
@@ -1265,50 +1382,50 @@ async function handleCreateAccessibilityReport(req, res) {
 
     const report = {
       id: randomUUID(),
-      placeKey: key,
-      placeName,
+      reporter_id: req.body.reporterId || null,
+      reporter_name: req.body.reporterName || "익명",
+      place_name: placeName,
       address,
-      x: req.body.x ?? req.body.lng ?? null,
-      y: req.body.y ?? req.body.lat ?? null,
+      lat: req.body.y ?? req.body.lat ?? null,
+      lng: req.body.x ?? req.body.lng ?? null,
       type: String(req.body.type || "").trim(),
       slope: req.body.slope || "",
-      wheelchairAccess: normalizeAccessibilityStatus(req.body.wheelchairAccess),
+      wheelchair_access: normalizeAccessibilityStatus(req.body.wheelchairAccess),
       detail: String(req.body.detail || "").trim(),
-      imageData: typeof req.body.imageData === "string" ? req.body.imageData : "",
-      status: "pending",
-      createdAt: new Date().toISOString(),
-      reviewedAt: null,
+      image_data: typeof req.body.imageData === "string" ? req.body.imageData : "",
     };
 
-    if (!MAPSERVICE_ACCESSIBILITY_REPORTS_ENDPOINT) {
-      return res.status(503).json({
-        ok: false,
-        error: "MapService accessibility reports endpoint is not configured.",
-      });
-    }
+    await db.execute(
+      `INSERT INTO accessibility_reports
+        (id, reporter_id, reporter_name, place_name, address, lat, lng, type, slope, wheelchair_access, detail, image_data, status)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')`,
+      [
+        report.id,
+        report.reporter_id,
+        report.reporter_name,
+        report.place_name,
+        report.address,
+        report.lat,
+        report.lng,
+        report.type,
+        report.slope,
+        report.wheelchair_access,
+        report.detail,
+        report.image_data,
+      ]
+    );
 
-    if (MAPSERVICE_ACCESSIBILITY_REPORTS_ENDPOINT) {
-      const data = await fetchMapServiceJson(MAPSERVICE_ACCESSIBILITY_REPORTS_ENDPOINT, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify(report),
-      });
-
-      return res.status(201).json({
-        ok: true,
-        report: data?.report || data || report,
-        source: "mapservice",
-      });
-    }
-
-    const reports = await readJsonFile(ACCESSIBILITY_REPORTS_FILE, []);
-
-    reports.unshift(report);
-    await writeJsonFile(ACCESSIBILITY_REPORTS_FILE, reports);
-
-    return res.status(201).json({ ok: true, report, source: "local" });
+    return res.status(201).json({
+      ok: true,
+      report: {
+        id: report.id,
+        placeName: report.place_name,
+        address: report.address,
+        status: "pending",
+        createdAt: new Date().toISOString(),
+      },
+      source: "local",
+    });
   } catch (error) {
     console.error("Accessibility report create error:", error);
     return res.status(500).json({ ok: false, error: error.message });
@@ -1408,6 +1525,13 @@ app.get("/api/access-places", handleAccessPlaces);
 app.get("/api/place-photo", handlePlacePhoto);
 app.get("/api/place-accessibility", handlePlaceAccessibility);
 app.post("/api/accessibility-reports", handleCreateAccessibilityReport);
+app.get("/api/accessibility-reports", handleListAccessibilityReports);
+app.post("/api/accessibility-reports/:id/approve", (req, res) =>
+  handleReviewAccessibilityReport(req, res, "approved")
+);
+app.post("/api/accessibility-reports/:id/reject", (req, res) =>
+  handleReviewAccessibilityReport(req, res, "rejected")
+);
 
 app.use("/api", (req, res) => {
   res.status(404).json({
@@ -1418,9 +1542,18 @@ app.use("/api", (req, res) => {
 
 // ================= 서버 실행 =================
 
-app.listen(PORT, () => {
+ensureEmergencyHelpTable()
+  .then(() => console.log("emergency_help_requests 테이블 준비 완료"))
+  .catch((error) => console.error("emergency_help_requests 테이블 생성 실패:", error));
+
+ensureAccessibilityReportsTable()
+  .then(() => console.log("accessibility_reports 테이블 준비 완료"))
+  .catch((error) => console.error("accessibility_reports 테이블 생성 실패:", error));
+
+httpServer.listen(PORT, () => {
   console.log("=== 새 서버 실행 성공 ===");
   console.log(`AccessNav backend running on http://localhost:${PORT}`);
+  console.log("Socket.io 실시간 통신 준비 완료 (help:request / accept / cancel / location / message)");
   console.log("등록 확인: GET  /api/test");
   console.log("등록 확인: POST /api/test-users");
 });
@@ -1671,9 +1804,6 @@ function searchNamesForPlace(item) {
     normalizePlaceName(baseName),
   ]);
 
-  names.add(normalizePlaceName(`한양여자대학교 ${baseName}`));
-  names.add(normalizePlaceName(`한양여대 ${baseName}`));
-
   if (item.address_name?.includes("entrance") || /정문|쪽문|입구|출입구/.test(rawName)) {
     names.add(normalizePlaceName(`${baseName} 입구`));
     names.add(normalizePlaceName(`${baseName} 출입구`));
@@ -1700,7 +1830,7 @@ async function loadMapServiceGraph() {
       p.latitude as lat, p.longitude as lng, p.poi_type as type,
       be.entrance_poi_id
     FROM poi p
-    LEFT JOIN building_entrance be
+    JOIN building_entrance be
       ON p.poi_id COLLATE utf8mb4_unicode_ci = be.building_poi_id
     WHERE p.poi_type = 'building'
     `
@@ -1732,9 +1862,7 @@ async function loadMapServiceGraph() {
         entrances: [],
       };
     }
-    if (row.entrance_poi_id) {
-      buildingMap[id].entrances.push(String(row.entrance_poi_id));
-    }
+    buildingMap[id].entrances.push(String(row.entrance_poi_id));
   });
 
   if (!Object.keys(buildingMap).length) {
