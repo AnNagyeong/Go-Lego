@@ -2384,10 +2384,12 @@ function syncRouteEndpoints(data, route) {
 
 function updateSelectedRouteSheet(route) {
   const routeLabel = route.id === "accessible" ? "추천 경로" : "최단 경로";
+  const dangerCount = Number(route.dangerCount ?? route.danger_count ?? 0);
   renderRoutePanel(
     `${endPlace.place_name}까지 ${routeLabel}`,
-    `계단 ${route.features.stairs}개 · 경사로 ${route.features.ramps}개 · ` +
-      `엘리베이터 ${route.features.elevators}개 · 횡단보도 ${route.features.crosswalks}개`
+    `위험 구간 ${Number.isFinite(dangerCount) ? dangerCount : 0}곳 · ` +
+      `계단 ${Number(route.features?.stairs || 0)}개 · 경사로 ${Number(route.features?.ramps || 0)}개 · ` +
+      `엘리베이터 ${Number(route.features?.elevators || 0)}개 · 횡단보도 ${Number(route.features?.crosswalks || 0)}개`
   );
 }
 
@@ -2818,7 +2820,30 @@ async function processNavigationLocation(rawLocation, { initializeRoute = true }
   const validation = validateLocation(rawLocation);
   if (!validation.valid || isLocationJump(lastAcceptedLocation, rawLocation)) return;
 
-  if (initializeRoute && !navigationRouteInitialized) {
+  // Agent에서 출발지를 명시한 경우, GPS가 그 출발지와 멀리 떨어져 있으면
+  // 현재 위치 기준으로 지도/잔여거리 UI를 덮어쓰지 않습니다.
+  // 사용자가 지정 출발지 근처(100m 이내)에 도착하면 GPS 안내를 이어갑니다.
+  if (currentRouteData?.preserveAgentRouteStart) {
+    const activeRoute = currentRouteData.selectedRoute || currentRouteData.routes?.[0];
+    const routeStart = activeRoute?.path?.[0];
+    if (routeStart) {
+      const distanceFromExplicitStart = getDistance(
+        rawLocation.latitude,
+        rawLocation.longitude,
+        Number(routeStart.lat),
+        Number(routeStart.lng)
+      );
+      if (!Number.isFinite(distanceFromExplicitStart) || distanceFromExplicitStart > 100) {
+        return;
+      }
+    }
+  }
+
+  if (
+    initializeRoute &&
+    !navigationRouteInitialized &&
+    !currentRouteData?.preserveAgentRouteStart
+  ) {
     navigationRouteInitialized = true;
     const entrance = await findNearbyEntrance(rawLocation);
     const correctedStart = snapToEntrance(rawLocation, entrance);
@@ -2847,6 +2872,7 @@ async function processNavigationLocation(rawLocation, { initializeRoute = true }
 
   if (
     !navigationSimulationActive &&
+    !currentRouteData?.preserveAgentRouteStart &&
     Number.isFinite(displayLocation.routeDistance) &&
     displayLocation.routeDistance > ROUTE_RECALCULATION_DISTANCE
   ) {
@@ -3831,4 +3857,257 @@ function clearSearchMarkers() {
   markers.forEach((marker) => marker.setMap(null));
   markers = [];
   clickedPlaceMarker = null;
+}
+
+
+// ================= AI Agent chat + navigation bridge =================
+const agentFab = document.getElementById("agentFab");
+const agentPanel = document.getElementById("agentPanel");
+const agentCloseBtn = document.getElementById("agentCloseBtn");
+const agentForm = document.getElementById("agentForm");
+const agentInput = document.getElementById("agentMessageInput");
+const agentMessages = document.getElementById("agentMessages");
+const agentSendBtn = document.getElementById("agentSendBtn");
+const agentMobilityType = document.getElementById("agentMobilityType");
+
+agentFab?.addEventListener("click", () => {
+  const opening = agentPanel?.classList.contains("hidden");
+  agentPanel?.classList.toggle("hidden", !opening);
+  agentFab.setAttribute("aria-expanded", String(Boolean(opening)));
+  if (opening) setTimeout(() => agentInput?.focus(), 80);
+});
+agentCloseBtn?.addEventListener("click", closeAgentPanel);
+function closeAgentPanel() {
+  agentPanel?.classList.add("hidden");
+  agentFab?.setAttribute("aria-expanded", "false");
+}
+document.querySelectorAll("[data-agent-question]").forEach((button) => {
+  button.addEventListener("click", () => {
+    if (agentInput) agentInput.value = button.dataset.agentQuestion || "";
+    if (agentPanel?.classList.contains("hidden")) agentFab?.click();
+    agentForm?.requestSubmit();
+  });
+});
+agentForm?.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const message = String(agentInput?.value || "").trim();
+  if (!message || !agentMessages || !agentSendBtn) return;
+  appendAgentMessage(message, "user");
+  agentInput.value = "";
+  agentSendBtn.disabled = true;
+  const pending = appendAgentMessage("질문을 확인하고 있습니다…", "bot");
+  try {
+    const locationInfo = await getAgentCurrentLocationIfNeeded(message);
+    const response = await fetch("/api/agent/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message, mobilityType: agentMobilityType?.value || selectedMobilityType, ...(locationInfo || {}) }),
+    });
+    const payload = await response.json().catch(() => ({}));
+    pending.remove();
+    if (!response.ok || payload.ok === false) {
+      appendAgentMessage(payload.error || payload.detail || "Agent 요청을 처리하지 못했습니다.", "error");
+      return;
+    }
+    const answer = appendAgentMessage(payload.answer || "요청을 처리했습니다.", "bot");
+    if (payload.intent === "ROUTE" && Array.isArray(payload.routes) && payload.routes.length) {
+      renderAgentRouteActions(answer, payload);
+    } else if (payload.intent === "ROUTE") {
+      appendAgentMessage("경로 데이터가 반환되지 않았습니다. 출발지와 목적지 이름을 더 정확하게 알려주세요.", "error");
+    } else if (Array.isArray(payload.items) && payload.items.length) {
+      if (payload.intent === "PHOTO") {
+        renderAgentPhotoGallery(payload.items);
+      } else {
+        appendAgentMessage(payload.items.slice(0, 6).map((item) => {
+          const where = [item.floor, item.description].filter(Boolean).join(" · ");
+          return `• ${item.name}${where ? " — " + where : ""}`;
+        }).join("\\n"), "bot");
+      }
+    }
+  } catch (error) {
+    pending.remove();
+    appendAgentMessage("Agent 서버에 연결하지 못했습니다. Go-Lego 서버와 Python Agent 서버가 실행 중인지 확인해주세요.", "error");
+    console.error("Agent chat failed:", error);
+  } finally {
+    agentSendBtn.disabled = false;
+    agentInput?.focus();
+  }
+});
+
+function appendAgentMessage(text, kind = "bot") {
+  const node = document.createElement("div");
+  node.className = `agent-message ${kind === "user" ? "agent-message-user" : "agent-message-bot"}`;
+  if (kind === "error") node.classList.add("agent-message-error");
+  node.textContent = text;
+  agentMessages.appendChild(node);
+  agentMessages.scrollTop = agentMessages.scrollHeight;
+  return node;
+}
+
+function renderAgentPhotoGallery(items) {
+  const gallery = document.createElement("div");
+  gallery.className = "agent-photo-gallery";
+  gallery.setAttribute("aria-label", "등록된 장소 사진");
+
+  items.slice(0, 5).forEach((item) => {
+    const card = document.createElement("figure");
+    card.className = "agent-photo-card";
+    const rawUrl = item.photoUrl || item.photo_url || item.imageUrl || item.image_url || item.url;
+    const caption = document.createElement("figcaption");
+    const name = document.createElement("strong");
+    name.textContent = item.name || "등록된 장소 사진";
+    caption.appendChild(name);
+    const metadata = [item.floor, item.description].filter(Boolean).join(" · ");
+    if (metadata) {
+      const detail = document.createElement("span");
+      detail.textContent = metadata;
+      caption.appendChild(detail);
+    }
+
+    if (typeof rawUrl === "string" && /^https?:\/\//i.test(rawUrl)) {
+      const image = document.createElement("img");
+      image.src = rawUrl;
+      image.alt = item.name || "등록된 장소 사진";
+      image.loading = "lazy";
+      image.referrerPolicy = "no-referrer";
+      image.addEventListener("error", () => {
+        image.remove();
+        const fallback = document.createElement("span");
+        fallback.className = "agent-photo-unavailable";
+        fallback.textContent = "사진을 불러오지 못했습니다.";
+        caption.appendChild(fallback);
+      }, { once: true });
+      card.appendChild(image);
+    } else {
+      const fallback = document.createElement("span");
+      fallback.className = "agent-photo-unavailable";
+      fallback.textContent = "사진 주소가 등록되어 있지 않습니다.";
+      card.appendChild(fallback);
+    }
+
+    card.appendChild(caption);
+    gallery.appendChild(card);
+  });
+
+  agentMessages.appendChild(gallery);
+  agentMessages.scrollTop = agentMessages.scrollHeight;
+}
+
+async function getAgentCurrentLocationIfNeeded(message) {
+  const normalized = String(message || "").replace(/한양여자대학교|한양여대/g, "").replace(/[\s_()-]/g, "").toLowerCase();
+  const buildings = ["정보문화관", "본관", "도서관", "디자인관", "운동장", "교수회관"];
+  const mentionedBuildings = buildings.filter((name) => normalized.includes(name.toLowerCase()));
+  const isRouteQuestion = /경로|길찾기|길안내|가는길|가는법|이동|안내해줘|안내해주세요|까지|찾아가|갈수/i.test(normalized);
+  const explicitlyRequestsCurrentLocation = /현재위치|내위치|여기서|지금여기/i.test(normalized);
+
+  // 목적지만 한 곳 언급한 길찾기는 현재 위치에서 출발하는 요청으로 처리합니다.
+  // 출발지와 목적지를 모두 명시한 요청에는 현재 위치를 출발지로 덮어쓰지 않습니다.
+  const needsCurrentLocation = explicitlyRequestsCurrentLocation ||
+    (isRouteQuestion && mentionedBuildings.length === 1);
+  if (!needsCurrentLocation) return null;
+
+  if (currentLocationPosition) {
+    return {
+      currentLatitude: currentLocationPosition.getLat(),
+      currentLongitude: currentLocationPosition.getLng(),
+    };
+  }
+  if (!navigator.geolocation) return null;
+  return new Promise((resolve) => navigator.geolocation.getCurrentPosition(
+    (position) => resolve({
+      currentLatitude: position.coords.latitude,
+      currentLongitude: position.coords.longitude,
+    }),
+    () => resolve(null),
+    { enableHighAccuracy: true, timeout: 8000, maximumAge: 30000 }
+  ));
+}
+
+function renderAgentRouteActions(messageNode, payload) {
+  (payload.routes || []).slice(0, 3).forEach((route, index) => {
+    const card = document.createElement("div");
+    card.className = "agent-route-card";
+    const title = document.createElement("strong");
+    title.textContent = route.title || (index === 0 ? "추천 경로" : `경로 ${index + 1}`);
+    const details = document.createElement("small");
+    const dangerCount = Number(route.dangerCount ?? route.danger_count ?? 0);
+    details.textContent = `${Number.isFinite(Number(route.distance)) ? Math.round(route.distance) + "m" : "거리 정보 없음"} · ${Number.isFinite(Number(route.duration)) ? Math.round(route.duration) + "분" : "시간 정보 없음"} · 위험 구간 ${Number.isFinite(dangerCount) ? dangerCount : 0}곳`;
+    const actions = document.createElement("div");
+    actions.className = "agent-route-actions";
+    const viewButton = document.createElement("button");
+    viewButton.type = "button";
+    viewButton.textContent = "지도에서 경로 보기";
+    viewButton.addEventListener("click", () => showAgentRouteOnMap(payload, route, false));
+    const startButton = document.createElement("button");
+    startButton.type = "button";
+    startButton.className = "agent-route-primary";
+    startButton.textContent = "안내 시작";
+    startButton.addEventListener("click", () => showAgentRouteOnMap(payload, route, true));
+    actions.append(viewButton, startButton);
+    card.append(title, details, actions);
+    messageNode.appendChild(card);
+  });
+  agentMessages.scrollTop = agentMessages.scrollHeight;
+}
+
+function agentRoutePointToPlace(point, fallbackName) {
+  const latitude = Number(point?.latitude ?? point?.lat);
+  const longitude = Number(point?.longitude ?? point?.lng);
+  if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) return null;
+  return { place_name: point.name || fallbackName, x: longitude, y: latitude, address_name: point.name || fallbackName, road_address_name: "", source: "agent" };
+}
+
+function agentRoutePath(route) {
+  return (route.path || []).map((point) => ({
+    id: point.id, name: point.name, lat: Number(point.latitude ?? point.lat),
+    lng: Number(point.longitude ?? point.lng), type: point.type || "path",
+  })).filter((point) => Number.isFinite(point.lat) && Number.isFinite(point.lng));
+}
+
+function showAgentRouteOnMap(payload, route, startNavigation = false) {
+  const path = agentRoutePath(route);
+  if (path.length < 2) {
+    appendAgentMessage("경로 좌표가 부족해 지도에 표시할 수 없습니다.", "error");
+    return;
+  }
+  if (navigationMode) stopNavigationTracking({ silent: true });
+  const startPoint = route.start || path[0];
+  const endPoint = route.destination || path[path.length - 1];
+  const nextStart = agentRoutePointToPlace(startPoint, payload.start?.name || "출발지");
+  const nextEnd = agentRoutePointToPlace(endPoint, payload.destination?.name || "목적지");
+  if (!nextStart || !nextEnd) {
+    appendAgentMessage("출발지 또는 도착지 좌표를 확인할 수 없습니다.", "error");
+    return;
+  }
+  startPlace = nextStart;
+  endPlace = nextEnd;
+  selectedMobilityType = agentMobilityType?.value || selectedMobilityType;
+  syncQuickRouteInputs();
+  updateStartMarker(startPlace);
+  updateEndMarker(endPlace);
+  const adaptedRoute = {
+    ...route, path, dangerCount: Number(route.dangerCount ?? route.danger_count ?? 0),
+    features: { stairs: Number(route.features?.stairs || 0), ramps: Number(route.features?.ramps || 0), elevators: Number(route.features?.elevators || 0), crosswalks: Number(route.features?.crosswalks || 0) },
+  };
+  const hasExplicitAgentStart = !/^(현재\s*위치|현재위치|내\s*위치|내위치)$/i.test(String(startPlace.place_name || "").trim());
+  currentRouteData = {
+    ok: true,
+    start: payload.start || { name: startPlace.place_name, lat: startPlace.y, lng: startPlace.x },
+    destination: payload.destination || { name: endPlace.place_name, lat: endPlace.y, lng: endPlace.x },
+    routes: [adaptedRoute], selectedRoute: adaptedRoute, source: "agent",
+    preserveAgentRouteStart: hasExplicitAgentStart,
+  };
+  clearDangerZones();
+  drawRoute({ path, colored: true });
+  drawDangerZones(routeDangerZones(adaptedRoute));
+  updateSelectedRouteSheet(adaptedRoute);
+  updateRouteInfo({ distance: adaptedRoute.distance, duration: adaptedRoute.duration * 60 });
+  updateDangerCount(adaptedRoute.dangerCount);
+  updateSafetyRatio(adaptedRoute);
+  document.body.classList.add("route-mode");
+  document.body.classList.remove("route-planner-mode");
+  hideQuickRouteResultList();
+  closeAgentPanel();
+  openPlaceSheet();
+  if (startNavigation) startNavigationTracking();
 }

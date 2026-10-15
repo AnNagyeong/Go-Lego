@@ -1370,6 +1370,39 @@ app.use(express.static(__dirname));
 // ================= API 404 처리 =================
 // API 주소가 잘못됐을 때 HTML 대신 JSON으로 응답
 
+
+// ================= AI Agent bridge =================
+// The Agent runs as a separate FastAPI service; the browser calls this same-origin proxy.
+app.post("/api/agent/chat", async (req, res) => {
+  const message = String(req.body?.message || "").trim();
+  const mobilityType = normalizeMobilityType(req.body?.mobilityType);
+  if (!message) return res.status(400).json({ ok: false, error: "질문을 입력해주세요." });
+  if (message.length > 200) return res.status(400).json({ ok: false, error: "질문은 200자 이내여야 합니다." });
+
+  const agentBaseUrl = String(process.env.AGENT_BASE_URL || "http://127.0.0.1:8000").replace(/\/+$/, "");
+  try {
+    const agentResponse = await fetch(`${agentBaseUrl}/api/agent/chat`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        message,
+        mobilityType,
+        ...(Number.isFinite(Number(req.body?.currentLatitude)) ? { currentLatitude: Number(req.body.currentLatitude) } : {}),
+        ...(Number.isFinite(Number(req.body?.currentLongitude)) ? { currentLongitude: Number(req.body.currentLongitude) } : {}),
+      }),
+      signal: AbortSignal.timeout(15000),
+    });
+    const payload = await agentResponse.json().catch(() => ({}));
+    if (!agentResponse.ok) {
+      return res.status(agentResponse.status).json({ ok: false, error: payload.detail || payload.error || "Agent 응답을 가져오지 못했습니다." });
+    }
+    return res.json(payload);
+  } catch (error) {
+    console.error("Agent bridge error:", error.message);
+    return res.status(503).json({ ok: false, error: "AI Agent에 연결할 수 없습니다. Agent 서버가 실행 중인지 확인해주세요." });
+  }
+});
+
 app.get("/api/access-routes", handleAccessRoutes);
 app.get("/api/access-places", handleAccessPlaces);
 app.get("/api/place-photo", handlePlacePhoto);
