@@ -1370,6 +1370,130 @@ app.use(express.static(__dirname));
 // ================= API 404 처리 =================
 // API 주소가 잘못됐을 때 HTML 대신 JSON으로 응답
 
+
+// ================= Agent 채팅 =================
+// 길찾기/사진 질문은 이 서버가 직접 처리하고(MapService 등록 장소와 저장된 경로를 그대로 사용),
+// 그 외 시설 질문만 별도 Agent 서버(AGENT_BASE_URL)로 넘깁니다.
+const agentBridge = require("./agentBridge");
+
+// MapService 건물/POI를 장소 검색용 형태로 만듭니다.
+async function loadAgentPlaceCandidates() {
+  const graphData = await loadMapServiceGraph();
+  return [
+    ...graphData.buildings.map((b) => ({ id: b.id, place_name: b.name, source: "mapservice" })),
+    ...graphData.nodes.map((n) => ({ id: n.id, place_name: n.name, source: "mapservice", poi_type: n.type })),
+  ];
+}
+
+// 사진 질문: 키워드와 맞는 MapService 장소의 등록 사진을 모아 돌려줍니다.
+async function handleAgentPhoto(keyword) {
+  const query = normalizePlaceName(keyword || "");
+  if (!query) {
+    return { ok: true, intent: "PHOTO", answer: "어느 장소의 사진을 볼지 알려주세요. 예: 정보문화관 사진", items: [] };
+  }
+  const candidates = (await loadAgentPlaceCandidates())
+    .filter((item) => placeMatchesQuery(item, query))
+    .sort((a, b) => placeSearchScore(b, query) - placeSearchScore(a, query))
+    .slice(0, 12);
+
+  const items = [];
+  const seen = new Set();
+  for (const item of candidates) {
+    const photos = await findMapServicePlacePhotos(item.id, item.place_name);
+    for (const photo of photos) {
+      const photoUrl = agentBridge.toServedPhotoUrl(photo.photoUri, MAPSERVICE_BASE_URL);
+      if (!photoUrl || seen.has(photoUrl)) continue;
+      seen.add(photoUrl);
+      items.push({ id: item.id, name: photo.label || item.place_name, photoUrl, description: "" });
+      if (items.length >= 5) break;
+    }
+    if (items.length >= 5) break;
+  }
+
+  return {
+    ok: true,
+    intent: "PHOTO",
+    answer: items.length
+      ? `${keyword} 관련 등록 사진 ${items.length}장입니다.`
+      : `${keyword}에 등록된 사진을 찾지 못했습니다.`,
+    items,
+  };
+}
+
+// 시설 등 그 외 질문은 Agent 서버로 넘깁니다.
+async function forwardToAgent(message, mobilityType, body) {
+  const agentBaseUrl = String(process.env.AGENT_BASE_URL || "http://127.0.0.1:8000").replace(/\/+$/, "");
+  const agentResponse = await fetch(`${agentBaseUrl}/api/agent/chat`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      message,
+      mobilityType,
+      ...(Number.isFinite(Number(body?.currentLatitude)) ? { currentLatitude: Number(body.currentLatitude) } : {}),
+      ...(Number.isFinite(Number(body?.currentLongitude)) ? { currentLongitude: Number(body.currentLongitude) } : {}),
+    }),
+    signal: AbortSignal.timeout(15000),
+  });
+  const payload = await agentResponse.json().catch(() => ({}));
+  if (!agentResponse.ok) {
+    const error = new Error(payload.detail || payload.error || "Agent 응답을 가져오지 못했습니다.");
+    error.status = agentResponse.status;
+    throw error;
+  }
+  // 경로 정보는 이 서버의 경로 계산을 쓰므로 Agent가 준 경로는 쓰지 않습니다.
+  if (payload.intent === "ROUTE") return null;
+  return payload;
+}
+
+app.post("/api/agent/chat", async (req, res) => {
+  const message = String(req.body?.message || "").trim();
+  const mobilityType = normalizeMobilityType(req.body?.mobilityType);
+  if (!message) return res.status(400).json({ ok: false, error: "질문을 입력해주세요." });
+  if (message.length > 200) return res.status(400).json({ ok: false, error: "질문은 200자 이내여야 합니다." });
+
+  try {
+    // 캠퍼스 장소 이름을 OpenAI 해석에 힌트로 넘깁니다. 실패해도 해석에는 영향이 없습니다.
+    let placeNames = [];
+    if (process.env.OPENAI_API_KEY) {
+      try {
+        const candidates = await loadAgentPlaceCandidates();
+        placeNames = [...new Set(candidates.map((c) => String(c.place_name).split("_")[0]))];
+      } catch (error) {
+        console.warn("Agent place names unavailable:", error.message);
+      }
+    }
+    const parsed = await agentBridge.parseAgentMessage(message, {
+      apiKey: process.env.OPENAI_API_KEY,
+      model: process.env.OPENAI_MODEL || undefined,
+      placeNames,
+    });
+
+    if (parsed.intent === "route" && parsed.destination) {
+      return res.json({
+        ok: true,
+        intent: "ROUTE",
+        answer: agentBridge.buildRouteAnswer(parsed.start, parsed.destination),
+        routeRequest: { start: parsed.start, destination: parsed.destination, mobilityType },
+      });
+    }
+
+    if (parsed.intent === "photo") {
+      return res.json(await handleAgentPhoto(parsed.keyword));
+    }
+
+    const forwarded = await forwardToAgent(message, mobilityType, req.body);
+    if (forwarded) return res.json(forwarded);
+    return res.json({ ok: true, intent: "OTHER", answer: "가고 싶은 곳을 알려주세요. 예: 본관에서 정보문화관으로 가고 싶어", items: [] });
+  } catch (error) {
+    console.error("Agent chat error:", error.message);
+    if (error.status) return res.status(error.status).json({ ok: false, error: error.message });
+    return res.status(503).json({
+      ok: false,
+      error: "이 질문은 Agent 서버가 필요한데 연결되지 않았습니다. 경로와 사진 질문은 Agent 서버 없이도 가능합니다.",
+    });
+  }
+});
+
 app.get("/api/access-routes", handleAccessRoutes);
 app.get("/api/access-places", handleAccessPlaces);
 app.get("/api/place-photo", handlePlacePhoto);
