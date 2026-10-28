@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>AccessNav Web</title>
-  <link rel="stylesheet" href="style.css?v=20260908-gps-simulator" />
+  <link rel="stylesheet" href="style.css?v=20261028-agent" />
 </head>
 <body>
   <div class="phone">
@@ -73,6 +73,36 @@
       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20.94 11A9 9 0 0 0 13 3.06V1h-2v2.06A9 9 0 0 0 3.06 11H1v2h2.06A9 9 0 0 0 11 20.94V23h2v-2.06A9 9 0 0 0 20.94 13H23v-2h-2.06ZM12 19a7 7 0 1 1 0-14 7 7 0 0 1 0 14Zm0-11a4 4 0 1 0 0 8 4 4 0 0 0 0-8Z" /></svg>
     </button>
     </div>
+
+    <!-- Agent floating action button and chat panel -->
+    <button id="agentFab" class="agent-fab" type="button" aria-label="Agent 열기" aria-controls="agentPanel" aria-expanded="false">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3a8 8 0 0 0-8 8v2a3 3 0 0 0 3 3h1v-6H7a5 5 0 0 1 10 0h-1v6h1a3 3 0 0 0 3-3v-2a8 8 0 0 0-8-8Z"/><path d="M8 19h5a3 3 0 0 0 3-3v-1"/></svg>
+      <span>Agent</span>
+    </button>
+    <section id="agentPanel" class="agent-panel hidden" aria-label="길 안내 Agent">
+      <header class="agent-panel-header">
+        <div class="agent-panel-identity"><span class="agent-panel-avatar" aria-hidden="true">G</span><div><strong>고르고 Agent</strong><small>자연어 길 안내</small></div></div>
+        <button id="agentCloseBtn" class="agent-close-btn" type="button" aria-label="Agent 닫기">×</button>
+      </header>
+      <div id="agentMessages" class="agent-messages" aria-live="polite">
+        <div class="agent-message agent-message-bot">가고 싶은 곳을 말씀해 주시면 지도에 경로를 표시합니다.<br><span>예: 본관에서 정보문화관으로 가고 싶어</span></div>
+      </div>
+      <div class="agent-shortcuts">
+        <button type="button" data-agent-question="한양여대 본관에서 정보문화관으로 가고 싶어">본관 → 정보문화관</button>
+        <button type="button" data-agent-question="정보문화관 사진 보여줘">정보문화관 사진</button>
+      </div>
+      <form id="agentForm" class="agent-composer">
+        <label class="agent-mobility-label" for="agentMobilityType">이동 유형</label>
+        <select id="agentMobilityType" aria-label="이동 유형">
+          <option value="walking">일반 이동</option><option value="wheelchair" selected>휠체어</option><option value="stroller">유모차</option><option value="senior">어르신</option>
+        </select>
+        <div class="agent-input-row">
+          <input id="agentMessageInput" type="text" maxlength="200" autocomplete="off" placeholder="어디까지 안내해 드릴까요?" aria-label="Agent 질문">
+          <button id="agentSendBtn" type="submit" aria-label="질문 보내기">↑</button>
+        </div>
+        <p>경로는 등록된 Go-LeGo 데이터로 확인합니다.</p>
+      </form>
+    </section>
 
     <section id="socialHelpPanel" class="social-help-panel hidden" aria-label="소셜 헬프 긴급 매칭">
       <div class="social-help-card">
@@ -286,6 +316,6 @@
   </div>
 
   <script src="https://dapi.kakao.com/v2/maps/sdk.js?appkey=__KAKAO_KEY__&libraries=services"></script>
-  <script src="script.js?v=20260908-gps-simulator"></script>
+  <script src="script.js?v=20261028-agent"></script>
 </body>
 </html>
