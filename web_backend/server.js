@@ -1391,10 +1391,16 @@ async function handleAgentPhoto(keyword) {
   if (!query) {
     return { ok: true, intent: "PHOTO", answer: "어느 장소의 사진을 볼지 알려주세요. 예: 정보문화관 사진", items: [] };
   }
-  const candidates = (await loadAgentPlaceCandidates())
+  let candidates = (await loadAgentPlaceCandidates())
     .filter((item) => placeMatchesQuery(item, query))
     .sort((a, b) => placeSearchScore(b, query) - placeSearchScore(a, query))
     .slice(0, 12);
+
+  // 이름이 정확히 같은 장소가 있으면 그 장소만 쓴다.
+  // 예: "본관 정문"이면 본관_정문만 보여주고 본관_쪽문, 본관_후문 사진은 섞지 않는다.
+  if (candidates.length && placeSearchScore(candidates[0], query) >= 100) {
+    candidates = candidates.filter((item) => placeSearchScore(item, query) >= 100);
+  }
 
   const items = [];
   const seen = new Set();
