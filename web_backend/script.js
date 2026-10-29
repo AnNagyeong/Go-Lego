@@ -16,6 +16,7 @@ let endPlace = null;
 let currentPolyline = null;
 let currentRoutePolylines = [];
 let dangerCircles = [];
+let approvedDangerCircles = [];
 let startMarker = null;
 let endMarker = null;
 let currentLocationMarker = null;
@@ -3739,6 +3740,46 @@ function dangerZonesFromRoute(path) {
   return [...zones.values()];
 }
 
+
+async function loadApprovedDangerZones() {
+  try {
+    const response = await fetch("/api/danger-zones");
+
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`);
+    }
+
+    const data = await response.json();
+    const zones = data.dangerZones || [];
+
+    approvedDangerCircles.forEach((circle) => {
+      circle.setMap(null);
+    });
+    approvedDangerCircles = [];
+
+    zones.forEach((zone) => {
+      const circle = new kakao.maps.Circle({
+        center: new kakao.maps.LatLng(zone.lat, zone.lng),
+        radius: zone.radius || 25,
+        strokeWeight: 2,
+        strokeColor: "#e53935",
+        strokeOpacity: 1,
+        fillColor: "#e53935",
+        fillOpacity: 0.3,
+      });
+
+      circle.setMap(map);
+      approvedDangerCircles.push(circle);
+    });
+
+    console.log(
+      `승인된 위험구간 ${zones.length}개 표시 완료`
+    );
+  } catch (err) {
+    console.error("승인된 위험구간 표시 실패:", err);
+  }
+}
+
 function drawDangerZones(zones) {
   clearDangerZones();
 
@@ -4082,3 +4123,7 @@ async function runAgentRoute(routeRequest, mobilityType) {
     console.error("Agent route failed:", error);
   }
 }
+
+
+// 승인된 위험구간을 지도에 표시
+loadApprovedDangerZones();

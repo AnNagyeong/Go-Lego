@@ -714,7 +714,7 @@ const MAPSERVICE_BASE_URL =
   process.env.MAPSERVICE_BASE_URL || "http://localhost:8080";
 
 const MAPSERVICE_REPORTS_ENDPOINT =
-  process.env.MAPSERVICE_REPORTS_ENDPOINT || "/api/reports";
+  process.env.MAPSERVICE_REPORTS_ENDPOINT || "/api/danger-zones";
 
 const MAPSERVICE_ACCESSIBILITY_REPORTS_ENDPOINT =
   process.env.MAPSERVICE_ACCESSIBILITY_REPORTS_ENDPOINT || "";
@@ -1333,11 +1333,19 @@ async function fetchDangerReportsFromMapService() {
 function normalizeDangerZones(rawReports) {
   return rawReports
     .map((r) => ({
+      id: r.report_id || r.id,
+      name: r.place_name || r.placeName || "위험구간",
+      category: r.category || "위험",
+      description: r.description || "",
       lat: Number(r.latitude ?? r.lat),
       lng: Number(r.longitude ?? r.lng),
       radius: 25,
     }))
-    .filter((z) => !Number.isNaN(z.lat) && !Number.isNaN(z.lng));
+    .filter(
+      (z) =>
+        Number.isFinite(z.lat) &&
+        Number.isFinite(z.lng)
+    );
 }
 
 function findDangerZonesOnRoute(routePath, zones) {
@@ -1504,6 +1512,25 @@ app.get("/api/access-routes", handleAccessRoutes);
 app.get("/api/access-places", handleAccessPlaces);
 app.get("/api/place-photo", handlePlacePhoto);
 app.get("/api/place-accessibility", handlePlaceAccessibility);
+
+app.get("/api/danger-zones", async (req, res) => {
+  try {
+    const rawReports = await fetchDangerReportsFromMapService();
+    const dangerZones = normalizeDangerZones(rawReports);
+
+    res.json({
+      ok: true,
+      dangerZones,
+    });
+  } catch (err) {
+    console.error("위험구간 조회 실패:", err);
+    res.status(500).json({
+      ok: false,
+      error: "위험구간 조회에 실패했습니다.",
+    });
+  }
+});
+
 app.post("/api/accessibility-reports", handleCreateAccessibilityReport);
 
 app.use("/api", (req, res) => {
