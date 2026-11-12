@@ -202,6 +202,37 @@
   </aside>
 </div>
 
+    <!-- 경로 안내 파노라마 패널 -->
+    <section id="panoGuide" class="pano-guide" aria-label="경로 파노라마 안내" hidden>
+      <button class="pano-guide-nav" id="panoPrevBtn" type="button" aria-label="이전 지점">‹</button>
+      <button class="pano-guide-thumb" id="panoThumbBtn" type="button" aria-label="파노라마 전체화면으로 보기" disabled>
+        <canvas id="panoCutCanvas" width="320" height="240" hidden></canvas>
+        <span class="pano-guide-empty" id="panoEmpty">불러오는 중...</span>
+      </button>
+      <div class="pano-guide-info" aria-live="polite">
+        <small id="panoStepLabel"></small>
+        <strong id="panoFromName"></strong>
+        <span id="panoToName"></span>
+        <em id="panoDirection"></em>
+      </div>
+      <button class="pano-guide-nav" id="panoNextBtn" type="button" aria-label="다음 지점">›</button>
+    </section>
+
+    <!-- 파노라마 전체화면 뷰어 -->
+    <div id="panoOverlay" class="pano-overlay" hidden>
+      <div class="pano-overlay-top">
+        <span id="panoViewerTitle"></span>
+        <button id="panoViewerClose" type="button">✕ 닫기</button>
+      </div>
+      <canvas id="panoViewerCanvas"></canvas>
+      <div id="panoViewerNotice" class="pano-overlay-notice" hidden></div>
+      <div class="pano-overlay-bottom">
+        <button id="panoViewerPrev" type="button">‹ 이전 지점</button>
+        <span>드래그로 시점 이동 · 두 손가락으로 확대</span>
+        <button id="panoViewerNext" type="button">다음 지점 ›</button>
+      </div>
+    </div>
+
     <!-- 하단 장소 시트 -->
     <div id="placeSheet" class="bottom-sheet expanded hidden">
   <div class="sheet-handle" id="sheetHandle"></div>
@@ -317,6 +348,12 @@
 
   <script src="https://dapi.kakao.com/v2/maps/sdk.js?appkey=__KAKAO_KEY__&libraries=services"></script>
   <script src="/socket.io/socket.io.js"></script>
+<<<<<<< HEAD
   <script src="script.js?v=20260908-gps-simulator"></script>
+=======
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+  <script src="script.js?v=20261112-pano"></script>
+  <script src="panorama-guide.js?v=20261112-pano"></script>
+>>>>>>> e403084b4fde6670b7bff6f5ffa1c416bbd91060
 </body>
 </html>

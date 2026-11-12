@@ -2965,6 +2965,7 @@ function startNavigationTracking() {
   lastAcceptedLocation = null;
   lastRouteRecalculationAt = 0;
   document.body.classList.add("navigation-mode");
+  window.PanoGuide?.start(currentRouteData?.selectedRoute || currentRouteData?.routes?.[0]);
   updateStartRouteButtonState();
   startDeviceHeadingTracking();
 
@@ -3045,6 +3046,7 @@ async function processNavigationLocation(rawLocation, { initializeRoute = true }
   currentLocationPosition = currentPosition;
   updateCurrentLocationMarker(displayLocation.latitude, displayLocation.longitude, nextHeading);
   updateLiveNavigationProgress(currentPosition);
+  window.PanoGuide?.update(displayLocation, activeRoute);
 
   if (
     !navigationSimulationActive &&
@@ -3101,6 +3103,7 @@ function startNavigationSimulation() {
   lastAcceptedLocation = null;
   lastNavigationPosition = null;
   document.body.classList.add("navigation-mode");
+  window.PanoGuide?.start(currentRouteData?.selectedRoute || currentRouteData?.routes?.[0]);
   updateStartRouteButtonState();
 
   let index = 0;
@@ -3138,6 +3141,7 @@ function stopNavigationTracking({ silent = false } = {}) {
   navigationMode = false;
   navigationSimulationActive = false;
   document.body.classList.remove("navigation-mode");
+  window.PanoGuide?.stop();
 
   if (navigationSimulationTimer !== null) {
     window.clearTimeout(navigationSimulationTimer);

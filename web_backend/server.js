@@ -1818,7 +1818,8 @@ async function loadMapServiceGraph() {
   const [nodes] = await mapServiceDb.execute(
     `
     SELECT poi_id as id, poi_name as name,
-      latitude as lat, longitude as lng, poi_type as type
+      latitude as lat, longitude as lng, poi_type as type,
+      photo_url
     FROM poi
     WHERE poi_type != 'building'
     `
@@ -1847,6 +1848,20 @@ async function loadMapServiceGraph() {
   );
 
   const parsedNodes = nodes.map(parsePoiRow);
+
+  // photo_url 이 비어 있어도 node_<poi_id>.jpg 파일이 있으면 파노라마로 연결
+  let panoramaFiles = new Set();
+  try {
+    panoramaFiles = new Set(await fs.readdir(MAPSERVICE_PANORAMAS_DIR));
+  } catch {
+    // 파노라마 폴더가 없으면 사진 없는 노드로 처리
+  }
+  parsedNodes.forEach((node) => {
+    const inferredName = `node_${node.id}.jpg`;
+    if (!node.panorama_url && panoramaFiles.has(inferredName)) {
+      node.panorama_url = `/panoramas/${inferredName}`;
+    }
+  });
   const nodeMap = Object.fromEntries(parsedNodes.map((node) => [node.id, node]));
   const buildingMap = {};
 
@@ -1923,6 +1938,7 @@ function parsePoiRow(row) {
     lat: Number(row.lat),
     lng: Number(row.lng),
     type: row.type,
+    panorama_url: normalizeMapServicePhotoUrl(row.photo_url),
   };
 }
 
