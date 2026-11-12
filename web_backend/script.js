@@ -16,7 +16,6 @@ let endPlace = null;
 let currentPolyline = null;
 let currentRoutePolylines = [];
 let dangerCircles = [];
-let approvedDangerCircles = [];
 let startMarker = null;
 let endMarker = null;
 let currentLocationMarker = null;
@@ -149,6 +148,7 @@ const volunteerRequestMapEl = document.getElementById("volunteerRequestMap");
 const volunteerRequesterLocation = document.getElementById("volunteerRequesterLocation");
 const acceptVolunteerRequestBtn = document.getElementById("acceptVolunteerRequestBtn");
 const declineVolunteerRequestBtn = document.getElementById("declineVolunteerRequestBtn");
+const volunteerRequesterName = document.getElementById("volunteerRequesterName");
 
 const loginNavBtn = document.getElementById("loginNavBtn");
 const cameraNavBtn = document.getElementById("cameraNavBtn");
@@ -164,6 +164,9 @@ let lastWeatherKey = "";
 let volunteerPreviewMap = null;
 let volunteerPreviewMarker = null;
 let volunteerNearbyMarkers = [];
+let helpSocket = null;
+let currentHelpRequestId = null;
+let activeIncomingHelpRequest = null;
 let activeQuickRouteRole = "start";
 let quickRouteSearchTimer = null;
 let quickRouteSearchId = 0;
@@ -321,6 +324,12 @@ if (socialHelpBtn) {
   socialHelpBtn.addEventListener("click", openSocialHelpPanel);
 }
 
+// 로그인한 사용자는 긴급 도움 패널을 열지 않아도
+// 주변의 다른 사용자가 보낸 도움 요청을 실시간으로 받을 수 있어야 하므로 미리 연결해둔다.
+if (getStoredAuthUser()?.id) {
+  initHelpSocket();
+}
+
 if (closeSocialHelpBtn) {
   closeSocialHelpBtn.addEventListener("click", closeSocialHelpPanel);
 }
@@ -379,6 +388,17 @@ function openSocialHelpPanel() {
 
 function closeSocialHelpPanel() {
   if (!socialHelpPanel) return;
+
+  if (currentHelpRequestId && helpSocket) {
+    helpSocket.emit("help:cancel", { requestId: currentHelpRequestId });
+    currentHelpRequestId = null;
+  }
+
+  if (requestSocialHelpBtn) {
+    requestSocialHelpBtn.disabled = false;
+    requestSocialHelpBtn.textContent = "주변에 도움 요청하기";
+  }
+
   socialHelpPanel.classList.add("hidden");
 }
 
@@ -397,8 +417,78 @@ function updateSocialHelpLocationText() {
   });
 }
 
+function initHelpSocket() {
+  if (helpSocket || typeof io !== "function") return helpSocket;
+
+  helpSocket = io();
+
+  helpSocket.on("connect", () => {
+    const user = getStoredAuthUser();
+    if (user?.id) {
+      helpSocket.emit("auth:register", { userId: user.id, nickname: user.nickname });
+    }
+  });
+
+  // 내가 요청한 도움이 다른 사용자에게 수락됐을 때 (요청자 화면)
+  helpSocket.on("help:accepted", ({ id, volunteerName }) => {
+    if (id !== currentHelpRequestId) return;
+    if (socialHelpStatus) {
+      socialHelpStatus.textContent = `${volunteerName || "봉사자"}님이 도움 요청을 수락했습니다.`;
+      socialHelpStatus.classList.remove("matching");
+    }
+  });
+
+  // 다른 사용자의 도움 요청이 나에게 실시간으로 들어왔을 때 (봉사자 화면)
+  helpSocket.on("help:incoming", (request) => {
+    if (!request?.id) return;
+    const myUser = getStoredAuthUser();
+    if (myUser?.id && request.requesterId === myUser.id) return; // 본인 요청은 무시
+
+    activeIncomingHelpRequest = request;
+    showIncomingHelpRequest(request);
+  });
+
+  // 다른 봉사자가 먼저 수락했거나 요청자가 취소해서 더 이상 유효하지 않을 때
+  helpSocket.on("help:closed", ({ id }) => {
+    if (activeIncomingHelpRequest?.id === id) {
+      activeIncomingHelpRequest = null;
+      volunteerRequestPanel?.classList.add("hidden");
+    }
+  });
+
+  return helpSocket;
+}
+
+function showIncomingHelpRequest(request) {
+  if (!volunteerRequestPanel) return;
+
+  if (volunteerRequesterName) {
+    volunteerRequesterName.textContent = request.requesterName || "익명";
+  }
+  if (volunteerRequesterLocation) {
+    volunteerRequesterLocation.textContent = request.locationLabel || "위치 정보 없음";
+  }
+
+  volunteerRequestPanel.classList.remove("hidden");
+
+  if (Number.isFinite(request.lat) && Number.isFinite(request.lng)) {
+    renderVolunteerRequestMap(new kakao.maps.LatLng(request.lat, request.lng));
+  } else {
+    renderVolunteerRequestMap();
+  }
+}
+
 function requestSocialHelp() {
   updateSocialHelpLocationText();
+  const socket = initHelpSocket();
+  const user = getStoredAuthUser();
+
+  if (!socket || !user?.id) {
+    if (socialHelpStatus) {
+      socialHelpStatus.textContent = "로그인 후 이용할 수 있습니다.";
+    }
+    return;
+  }
 
   if (socialHelpStatus) {
     socialHelpStatus.textContent = "주변 봉사자에게 요청을 보내는 중";
@@ -410,26 +500,37 @@ function requestSocialHelp() {
     requestSocialHelpBtn.textContent = "매칭 요청 완료";
   }
 
-  setTimeout(() => {
-    if (socialHelpStatus) {
-      socialHelpStatus.textContent = "요청이 접수되었습니다. 가까운 봉사자 응답을 기다리는 중";
-    }
-    showVolunteerRequestPreview();
-  }, 900);
-}
+  const position = currentLocationPosition || map.getCenter();
 
-function showVolunteerRequestPreview() {
-  if (!volunteerRequestPanel) return;
+  getSocialHelpLocationLabel().then((locationLabel) => {
+    const payload = {
+      requesterId: user.id,
+      requesterName: user.nickname || "익명",
+      lat: position.getLat(),
+      lng: position.getLng(),
+      locationLabel,
+      mobilityType: selectedMobilityType,
+    };
 
-  if (volunteerRequesterLocation) {
-    volunteerRequesterLocation.textContent = "위치 확인 중";
-    getSocialHelpLocationLabel().then((locationText) => {
-      volunteerRequesterLocation.textContent = locationText;
+    socket.emit("help:request", payload, (result) => {
+      if (!result?.ok) {
+        if (socialHelpStatus) {
+          socialHelpStatus.textContent = result?.error || "요청 전송에 실패했습니다.";
+          socialHelpStatus.classList.remove("matching");
+        }
+        if (requestSocialHelpBtn) {
+          requestSocialHelpBtn.disabled = false;
+          requestSocialHelpBtn.textContent = "주변에 도움 요청하기";
+        }
+        return;
+      }
+
+      currentHelpRequestId = result.id;
+      if (socialHelpStatus) {
+        socialHelpStatus.textContent = "요청이 접수되었습니다. 가까운 봉사자 응답을 기다리는 중";
+      }
     });
-  }
-
-  volunteerRequestPanel.classList.remove("hidden");
-  renderVolunteerRequestMap();
+  });
 }
 
 async function getSocialHelpLocationLabel() {
@@ -495,10 +596,10 @@ function getAddressLabelFromMapCenter() {
   });
 }
 
-function renderVolunteerRequestMap() {
+function renderVolunteerRequestMap(requestPosition) {
   if (!volunteerRequestMapEl) return;
 
-  const position = currentLocationPosition || map.getCenter();
+  const position = requestPosition || currentLocationPosition || map.getCenter();
   if (!position) return;
 
   setTimeout(() => {
@@ -565,13 +666,29 @@ function renderVolunteerNearbyBuildingMarkers(position) {
 
 function respondToVolunteerRequest(status) {
   if (!volunteerRequestPanel) return;
+  const request = activeIncomingHelpRequest;
+  const socket = initHelpSocket();
+  const user = getStoredAuthUser();
 
   if (status === "accepted") {
-    alert("지원 요청을 수락했습니다. 신청자에게 이동 중 알림이 전송됩니다.");
+    if (socket && user?.id && request?.id) {
+      socket.emit(
+        "help:accept",
+        { requestId: request.id, volunteerId: user.id, volunteerName: user.nickname || "봉사자" },
+        (result) => {
+          if (!result?.ok) {
+            alert(result?.error || "이미 다른 사용자가 응답한 요청입니다.");
+          } else {
+            alert("지원 요청을 수락했습니다. 신청자에게 알림이 전송됩니다.");
+          }
+        }
+      );
+    }
   } else {
     alert("지원 요청을 거절했습니다. 다른 주변 사용자에게 요청이 유지됩니다.");
   }
 
+  activeIncomingHelpRequest = null;
   volunteerRequestPanel.classList.add("hidden");
 }
 
@@ -1495,6 +1612,8 @@ async function submitInlineReport() {
   submitButton.disabled = true;
   submitButton.textContent = "등록 중...";
 
+  const reportUser = getStoredAuthUser();
+
   try {
     const response = await fetch("/api/accessibility-reports", {
       method: "POST",
@@ -1511,6 +1630,8 @@ async function submitInlineReport() {
         slope: slopeInput?.value || "10",
         detail: detailInput?.value || "",
         imageData,
+        reporterId: reportUser?.id || null,
+        reporterName: reportUser?.nickname || "익명",
       }),
     });
     const data = await response.json();
@@ -1900,6 +2021,60 @@ function searchNearbyPlacesFromPosition(keyword, currentPosition) {
     placesService.keywordSearch(keyword, callback, options);
   }
 }
+
+let approvedReportMarkers = [];
+let approvedReportInfoWindow = null;
+
+async function loadApprovedAccessibilityReports() {
+  try {
+    const response = await fetch("/api/accessibility-reports?status=approved");
+    const data = await response.json();
+    if (!data.ok) return;
+
+    approvedReportMarkers.forEach((marker) => marker.setMap(null));
+    approvedReportMarkers = [];
+
+    data.reports.forEach((report) => {
+      const lat = Number(report.lat);
+      const lng = Number(report.lng);
+      if (!Number.isFinite(lat) || !Number.isFinite(lng)) return;
+
+      const position = new kakao.maps.LatLng(lat, lng);
+      const marker = new kakao.maps.Marker({
+        map,
+        position,
+        title: `${report.placeName || "위험 구간"} (검증된 제보)`,
+        image: new kakao.maps.MarkerImage(
+          "data:image/svg+xml;charset=UTF-8," +
+            encodeURIComponent(
+              '<svg xmlns="http://www.w3.org/2000/svg" width="32" height="38" viewBox="0 0 32 38"><path d="M16 0C7.2 0 0 7.2 0 16c0 11 16 22 16 22s16-11 16-22C32 7.2 24.8 0 16 0z" fill="#ef4444"/><text x="16" y="21" font-size="16" text-anchor="middle" fill="white" font-family="sans-serif">!</text></svg>'
+            ),
+          new kakao.maps.Size(32, 38),
+          { offset: new kakao.maps.Point(16, 38) }
+        ),
+      });
+
+      kakao.maps.event.addListener(marker, "click", () => {
+        approvedReportInfoWindow?.close();
+        approvedReportInfoWindow = new kakao.maps.InfoWindow({
+          content: `
+            <div style="padding:8px 10px; font-size:13px; line-height:1.5; max-width:220px;">
+              <strong>${report.placeName || "검증된 위험 구간"}</strong><br />
+              <span>${report.type || ""}${report.type ? " · " : ""}${report.detail || ""}</span>
+            </div>
+          `,
+        });
+        approvedReportInfoWindow.open(map, marker);
+      });
+
+      approvedReportMarkers.push(marker);
+    });
+  } catch (error) {
+    console.warn("승인된 제보 로딩 실패:", error);
+  }
+}
+
+loadApprovedAccessibilityReports();
 
 function drawNearbyPlaceMarkers(places) {
   const bounds = new kakao.maps.LatLngBounds();
@@ -2790,6 +2965,7 @@ function startNavigationTracking() {
   lastAcceptedLocation = null;
   lastRouteRecalculationAt = 0;
   document.body.classList.add("navigation-mode");
+  window.PanoGuide?.start(currentRouteData?.selectedRoute || currentRouteData?.routes?.[0]);
   updateStartRouteButtonState();
   startDeviceHeadingTracking();
 
@@ -2821,12 +2997,29 @@ async function processNavigationLocation(rawLocation, { initializeRoute = true }
   const validation = validateLocation(rawLocation);
   if (!validation.valid || isLocationJump(lastAcceptedLocation, rawLocation)) return;
 
-  // [시연용으로 잠시 끔 - 1/2] 경로 시작 후 출발지를 현재 위치(GPS) 또는 가까운 입구로 바꾸고
-  // 경로를 다시 그리는 코드입니다. 다시 켜려면 아래 주석을 풀면 됩니다.
-  /*
+  // Agent에서 출발지를 명시한 경우, GPS가 그 출발지와 멀리 떨어져 있으면
+  // 현재 위치 기준으로 지도/잔여거리 UI를 덮어쓰지 않습니다.
+  // 사용자가 지정 출발지 근처(100m 이내)에 도착하면 GPS 안내를 이어갑니다.
+  if (currentRouteData?.preserveAgentRouteStart) {
+    const activeRoute = currentRouteData.selectedRoute || currentRouteData.routes?.[0];
+    const routeStart = activeRoute?.path?.[0];
+    if (routeStart) {
+      const distanceFromExplicitStart = getDistance(
+        rawLocation.latitude,
+        rawLocation.longitude,
+        Number(routeStart.lat),
+        Number(routeStart.lng)
+      );
+      if (!Number.isFinite(distanceFromExplicitStart) || distanceFromExplicitStart > 100) {
+        return;
+      }
+    }
+  }
+
   if (
     initializeRoute &&
-    !navigationRouteInitialized
+    !navigationRouteInitialized &&
+    !currentRouteData?.preserveAgentRouteStart
   ) {
     navigationRouteInitialized = true;
     const entrance = await findNearbyEntrance(rawLocation);
@@ -2845,7 +3038,6 @@ async function processNavigationLocation(rawLocation, { initializeRoute = true }
       await drawDefaultRouteFromSelection();
     }
   }
-  */
 
   const activeRoute = currentRouteData?.selectedRoute || currentRouteData?.routes?.[0];
   const displayLocation = snapToRoute(rawLocation, activeRoute);
@@ -2854,28 +3046,22 @@ async function processNavigationLocation(rawLocation, { initializeRoute = true }
   currentLocationPosition = currentPosition;
   updateCurrentLocationMarker(displayLocation.latitude, displayLocation.longitude, nextHeading);
   updateLiveNavigationProgress(currentPosition);
+  window.PanoGuide?.update(displayLocation, activeRoute);
 
-  // [시연용으로 잠시 끔 - 2/2] 경로에서 ROUTE_RECALCULATION_DISTANCE 이상 벗어나면
-  // 현재 위치 기준으로 경로를 다시 계산하는 코드입니다. 다시 켜려면 주석을 풀면 됩니다.
-  /*
   if (
     !navigationSimulationActive &&
+    !currentRouteData?.preserveAgentRouteStart &&
     Number.isFinite(displayLocation.routeDistance) &&
     displayLocation.routeDistance > ROUTE_RECALCULATION_DISTANCE
   ) {
     await handleRouteDeviation(rawLocation);
   }
-  */
 
-  // [시연용으로 잠시 끔] 안내 중 지도를 내 위치로 계속 따라 이동시키는 코드입니다.
-  // 다시 켜려면 주석을 풀면 됩니다.
-  /*
   if (navigationMode) {
     if (typeof map.panTo === "function") map.panTo(currentPosition);
     else map.setCenter(currentPosition);
     map.setLevel(3);
   }
-  */
 
   lastNavigationPosition = currentPosition;
   lastAcceptedLocation = rawLocation;
@@ -2917,6 +3103,7 @@ function startNavigationSimulation() {
   lastAcceptedLocation = null;
   lastNavigationPosition = null;
   document.body.classList.add("navigation-mode");
+  window.PanoGuide?.start(currentRouteData?.selectedRoute || currentRouteData?.routes?.[0]);
   updateStartRouteButtonState();
 
   let index = 0;
@@ -2954,6 +3141,7 @@ function stopNavigationTracking({ silent = false } = {}) {
   navigationMode = false;
   navigationSimulationActive = false;
   document.body.classList.remove("navigation-mode");
+  window.PanoGuide?.stop();
 
   if (navigationSimulationTimer !== null) {
     window.clearTimeout(navigationSimulationTimer);
@@ -3740,46 +3928,6 @@ function dangerZonesFromRoute(path) {
   return [...zones.values()];
 }
 
-
-async function loadApprovedDangerZones() {
-  try {
-    const response = await fetch("/api/danger-zones");
-
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status}`);
-    }
-
-    const data = await response.json();
-    const zones = data.dangerZones || [];
-
-    approvedDangerCircles.forEach((circle) => {
-      circle.setMap(null);
-    });
-    approvedDangerCircles = [];
-
-    zones.forEach((zone) => {
-      const circle = new kakao.maps.Circle({
-        center: new kakao.maps.LatLng(zone.lat, zone.lng),
-        radius: zone.radius || 25,
-        strokeWeight: 2,
-        strokeColor: "#e53935",
-        strokeOpacity: 1,
-        fillColor: "#e53935",
-        fillOpacity: 0.3,
-      });
-
-      circle.setMap(map);
-      approvedDangerCircles.push(circle);
-    });
-
-    console.log(
-      `승인된 위험구간 ${zones.length}개 표시 완료`
-    );
-  } catch (err) {
-    console.error("승인된 위험구간 표시 실패:", err);
-  }
-}
-
 function drawDangerZones(zones) {
   clearDangerZones();
 
@@ -3927,32 +4075,38 @@ agentForm?.addEventListener("submit", async (event) => {
   appendAgentMessage(message, "user");
   agentInput.value = "";
   agentSendBtn.disabled = true;
-  const pending = appendAgentMessage("확인하고 있습니다…", "bot");
+  const pending = appendAgentMessage("질문을 확인하고 있습니다…", "bot");
   try {
-    const mobilityType = agentMobilityType?.value || selectedMobilityType;
+    const locationInfo = await getAgentCurrentLocationIfNeeded(message);
     const response = await fetch("/api/agent/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ message, mobilityType }),
+      body: JSON.stringify({ message, mobilityType: agentMobilityType?.value || selectedMobilityType, ...(locationInfo || {}) }),
     });
     const payload = await response.json().catch(() => ({}));
     pending.remove();
     if (!response.ok || payload.ok === false) {
-      appendAgentMessage(payload.error || payload.detail || "요청을 처리하지 못했습니다.", "error");
+      appendAgentMessage(payload.error || payload.detail || "Agent 요청을 처리하지 못했습니다.", "error");
       return;
     }
-    appendAgentMessage(payload.answer || "요청을 처리했습니다.", "bot");
-
-    if (payload.intent === "ROUTE" && payload.routeRequest) {
-      // 경로는 길찾기 창에서 직접 검색할 때와 같은 방식으로 그립니다.
-      await runAgentRoute(payload.routeRequest, mobilityType);
-    } else if (payload.intent === "PHOTO" && Array.isArray(payload.items) && payload.items.length) {
-      renderAgentPhotoGallery(payload.items);
+    const answer = appendAgentMessage(payload.answer || "요청을 처리했습니다.", "bot");
+    if (payload.intent === "ROUTE" && Array.isArray(payload.routes) && payload.routes.length) {
+      renderAgentRouteActions(answer, payload);
+    } else if (payload.intent === "ROUTE") {
+      appendAgentMessage("경로 데이터가 반환되지 않았습니다. 출발지와 목적지 이름을 더 정확하게 알려주세요.", "error");
+    } else if (Array.isArray(payload.items) && payload.items.length) {
+      if (payload.intent === "PHOTO") {
+        renderAgentPhotoGallery(payload.items);
+      } else {
+        appendAgentMessage(payload.items.slice(0, 6).map((item) => {
+          const where = [item.floor, item.description].filter(Boolean).join(" · ");
+          return `• ${item.name}${where ? " — " + where : ""}`;
+        }).join("\\n"), "bot");
+      }
     }
-    // 그 외 질문은 answer 문장에 목록이 이미 들어 있으므로 items를 다시 출력하지 않습니다.
   } catch (error) {
     pending.remove();
-    appendAgentMessage("서버에 연결하지 못했습니다. Go-Lego 서버가 실행 중인지 확인해주세요.", "error");
+    appendAgentMessage("Agent 서버에 연결하지 못했습니다. Go-Lego 서버와 Python Agent 서버가 실행 중인지 확인해주세요.", "error");
     console.error("Agent chat failed:", error);
   } finally {
     agentSendBtn.disabled = false;
@@ -3968,11 +4122,6 @@ function appendAgentMessage(text, kind = "bot") {
   agentMessages.appendChild(node);
   agentMessages.scrollTop = agentMessages.scrollHeight;
   return node;
-}
-
-// 서버가 서빙하는 사진 경로(/panoramas/..., /images/...)와 https 주소만 허용합니다.
-function isAllowedAgentPhotoUrl(value) {
-  return typeof value === "string" && (/^https?:\/\//i.test(value) || /^\/(?:panoramas|images)\//.test(value));
 }
 
 function renderAgentPhotoGallery(items) {
@@ -3995,7 +4144,7 @@ function renderAgentPhotoGallery(items) {
       caption.appendChild(detail);
     }
 
-    if (isAllowedAgentPhotoUrl(rawUrl)) {
+    if (typeof rawUrl === "string" && /^https?:\/\//i.test(rawUrl)) {
       const image = document.createElement("img");
       image.src = rawUrl;
       image.alt = item.name || "등록된 장소 사진";
@@ -4024,106 +4173,121 @@ function renderAgentPhotoGallery(items) {
   agentMessages.scrollTop = agentMessages.scrollHeight;
 }
 
-// 출발지를 말하지 않았을 때 쓸 현재 위치를 장소 객체로 돌려줍니다.
-async function getAgentCurrentPlace() {
-  let latitude = null;
-  let longitude = null;
+async function getAgentCurrentLocationIfNeeded(message) {
+  const normalized = String(message || "").replace(/한양여자대학교|한양여대/g, "").replace(/[\s_()-]/g, "").toLowerCase();
+  const buildings = ["정보문화관", "본관", "도서관", "디자인관", "운동장", "교수회관"];
+  const mentionedBuildings = buildings.filter((name) => normalized.includes(name.toLowerCase()));
+  const isRouteQuestion = /경로|길찾기|길안내|가는길|가는법|이동|안내해줘|안내해주세요|까지|찾아가|갈수/i.test(normalized);
+  const explicitlyRequestsCurrentLocation = /현재위치|내위치|여기서|지금여기/i.test(normalized);
+
+  // 목적지만 한 곳 언급한 길찾기는 현재 위치에서 출발하는 요청으로 처리합니다.
+  // 출발지와 목적지를 모두 명시한 요청에는 현재 위치를 출발지로 덮어쓰지 않습니다.
+  const needsCurrentLocation = explicitlyRequestsCurrentLocation ||
+    (isRouteQuestion && mentionedBuildings.length === 1);
+  if (!needsCurrentLocation) return null;
 
   if (currentLocationPosition) {
-    latitude = currentLocationPosition.getLat();
-    longitude = currentLocationPosition.getLng();
-  } else if (navigator.geolocation) {
-    const position = await new Promise((resolve) => navigator.geolocation.getCurrentPosition(
-      resolve,
-      () => resolve(null),
-      { enableHighAccuracy: true, timeout: 8000, maximumAge: 30000 }
-    ));
-    if (position) {
-      latitude = position.coords.latitude;
-      longitude = position.coords.longitude;
-    }
+    return {
+      currentLatitude: currentLocationPosition.getLat(),
+      currentLongitude: currentLocationPosition.getLng(),
+    };
   }
-
-  if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) {
-    throw new Error("현재 위치를 확인할 수 없습니다. 출발지를 함께 말씀해 주세요.");
-  }
-  return { place_name: "현재 위치", address_name: "", road_address_name: "", x: longitude, y: latitude, source: "gps" };
+  if (!navigator.geolocation) return null;
+  return new Promise((resolve) => navigator.geolocation.getCurrentPosition(
+    (position) => resolve({
+      currentLatitude: position.coords.latitude,
+      currentLongitude: position.coords.longitude,
+    }),
+    () => resolve(null),
+    { enableHighAccuracy: true, timeout: 8000, maximumAge: 30000 }
+  ));
 }
 
-// Agent가 이해한 출발지/도착지로 지도에 경로를 그립니다.
-// 장소 검색은 MapService 등록 장소를 먼저, 없으면 카카오 검색 결과를 씁니다.
-// 경로 계산은 길찾기 창과 같은 /api/access-routes 를 쓰기 때문에
-// MapService에 저장된 안전 경로가 있으면 그 경로가 그대로 나옵니다.
-async function runAgentRoute(routeRequest, mobilityType) {
-  try {
-    const nextMobility = ["walking", "wheelchair", "stroller", "senior"].includes(mobilityType)
-      ? mobilityType
-      : selectedMobilityType;
-    selectedMobilityType = nextMobility;
-    document.querySelectorAll("[data-mobility-type]").forEach((button) => {
-      const selected = button.dataset.mobilityType === selectedMobilityType;
-      button.classList.toggle("active", selected);
-      button.setAttribute("aria-pressed", String(selected));
-    });
-
-    const [resolvedStartPlace, resolvedEndPlace] = await Promise.all([
-      routeRequest.start ? resolveRouteInputPlace(routeRequest.start, "출발지") : getAgentCurrentPlace(),
-      resolveRouteInputPlace(routeRequest.destination, "도착지"),
-    ]);
-
-    if (
-      getDistance(
-        Number(resolvedStartPlace.y),
-        Number(resolvedStartPlace.x),
-        Number(resolvedEndPlace.y),
-        Number(resolvedEndPlace.x)
-      ) < 3
-    ) {
-      throw new Error("출발지와 도착지가 같습니다.");
-    }
-
-    clearNearbyFilterSelection();
-    clearSearchMarkers();
-    hideResultList();
-    hideQuickRouteResultList();
-    clearRoutePolylines();
-    clearDangerZones();
-
-    startPlace = resolvedStartPlace;
-    endPlace = resolvedEndPlace;
-    selectedPlaceForRoute = null;
-    currentRouteData = null;
-    if (quickStartInput) quickStartInput.value = startPlace.place_name || routeRequest.start || "";
-    if (quickEndInput) quickEndInput.value = endPlace.place_name || routeRequest.destination || "";
-
-    updateStartMarker(startPlace);
-    updateEndMarker(endPlace);
-    document.body.classList.add("route-mode");
-    openPlaceSheet();
-    updatePlaceSheet();
-    await drawDefaultRouteFromSelection();
-
-    const route = currentRouteData?.selectedRoute;
-    if (!route) {
-      appendAgentMessage("경로를 불러오지 못했습니다. 잠시 후 다시 시도해 주세요.", "error");
-      return;
-    }
-
-    const distance = Number(route.distance || 0);
-    const distanceText = distance < 1000 ? `${Math.round(distance)}m` : `${(distance / 1000).toFixed(1)}km`;
-    const minutes = Math.ceil(Number(route.duration || 0));
-    const dangerCount = Number(route.dangerCount || 0);
-    appendAgentMessage(
-      `${startPlace.place_name}에서 ${endPlace.place_name}까지 ${distanceText}, 약 ${minutes}분입니다. 위험 구간은 ${dangerCount}곳입니다.`,
-      "bot"
-    );
-    closeAgentPanel();
-  } catch (error) {
-    appendAgentMessage(error.message || "경로를 표시하지 못했습니다.", "error");
-    console.error("Agent route failed:", error);
-  }
+function renderAgentRouteActions(messageNode, payload) {
+  (payload.routes || []).slice(0, 3).forEach((route, index) => {
+    const card = document.createElement("div");
+    card.className = "agent-route-card";
+    const title = document.createElement("strong");
+    title.textContent = route.title || (index === 0 ? "추천 경로" : `경로 ${index + 1}`);
+    const details = document.createElement("small");
+    const dangerCount = Number(route.dangerCount ?? route.danger_count ?? 0);
+    details.textContent = `${Number.isFinite(Number(route.distance)) ? Math.round(route.distance) + "m" : "거리 정보 없음"} · ${Number.isFinite(Number(route.duration)) ? Math.round(route.duration) + "분" : "시간 정보 없음"} · 위험 구간 ${Number.isFinite(dangerCount) ? dangerCount : 0}곳`;
+    const actions = document.createElement("div");
+    actions.className = "agent-route-actions";
+    const viewButton = document.createElement("button");
+    viewButton.type = "button";
+    viewButton.textContent = "지도에서 경로 보기";
+    viewButton.addEventListener("click", () => showAgentRouteOnMap(payload, route, false));
+    const startButton = document.createElement("button");
+    startButton.type = "button";
+    startButton.className = "agent-route-primary";
+    startButton.textContent = "안내 시작";
+    startButton.addEventListener("click", () => showAgentRouteOnMap(payload, route, true));
+    actions.append(viewButton, startButton);
+    card.append(title, details, actions);
+    messageNode.appendChild(card);
+  });
+  agentMessages.scrollTop = agentMessages.scrollHeight;
 }
 
+function agentRoutePointToPlace(point, fallbackName) {
+  const latitude = Number(point?.latitude ?? point?.lat);
+  const longitude = Number(point?.longitude ?? point?.lng);
+  if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) return null;
+  return { place_name: point.name || fallbackName, x: longitude, y: latitude, address_name: point.name || fallbackName, road_address_name: "", source: "agent" };
+}
 
-// 승인된 위험구간을 지도에 표시
-loadApprovedDangerZones();
+function agentRoutePath(route) {
+  return (route.path || []).map((point) => ({
+    id: point.id, name: point.name, lat: Number(point.latitude ?? point.lat),
+    lng: Number(point.longitude ?? point.lng), type: point.type || "path",
+  })).filter((point) => Number.isFinite(point.lat) && Number.isFinite(point.lng));
+}
+
+function showAgentRouteOnMap(payload, route, startNavigation = false) {
+  const path = agentRoutePath(route);
+  if (path.length < 2) {
+    appendAgentMessage("경로 좌표가 부족해 지도에 표시할 수 없습니다.", "error");
+    return;
+  }
+  if (navigationMode) stopNavigationTracking({ silent: true });
+  const startPoint = route.start || path[0];
+  const endPoint = route.destination || path[path.length - 1];
+  const nextStart = agentRoutePointToPlace(startPoint, payload.start?.name || "출발지");
+  const nextEnd = agentRoutePointToPlace(endPoint, payload.destination?.name || "목적지");
+  if (!nextStart || !nextEnd) {
+    appendAgentMessage("출발지 또는 도착지 좌표를 확인할 수 없습니다.", "error");
+    return;
+  }
+  startPlace = nextStart;
+  endPlace = nextEnd;
+  selectedMobilityType = agentMobilityType?.value || selectedMobilityType;
+  syncQuickRouteInputs();
+  updateStartMarker(startPlace);
+  updateEndMarker(endPlace);
+  const adaptedRoute = {
+    ...route, path, dangerCount: Number(route.dangerCount ?? route.danger_count ?? 0),
+    features: { stairs: Number(route.features?.stairs || 0), ramps: Number(route.features?.ramps || 0), elevators: Number(route.features?.elevators || 0), crosswalks: Number(route.features?.crosswalks || 0) },
+  };
+  const hasExplicitAgentStart = !/^(현재\s*위치|현재위치|내\s*위치|내위치)$/i.test(String(startPlace.place_name || "").trim());
+  currentRouteData = {
+    ok: true,
+    start: payload.start || { name: startPlace.place_name, lat: startPlace.y, lng: startPlace.x },
+    destination: payload.destination || { name: endPlace.place_name, lat: endPlace.y, lng: endPlace.x },
+    routes: [adaptedRoute], selectedRoute: adaptedRoute, source: "agent",
+    preserveAgentRouteStart: hasExplicitAgentStart,
+  };
+  clearDangerZones();
+  drawRoute({ path, colored: true });
+  drawDangerZones(routeDangerZones(adaptedRoute));
+  updateSelectedRouteSheet(adaptedRoute);
+  updateRouteInfo({ distance: adaptedRoute.distance, duration: adaptedRoute.duration * 60 });
+  updateDangerCount(adaptedRoute.dangerCount);
+  updateSafetyRatio(adaptedRoute);
+  document.body.classList.add("route-mode");
+  document.body.classList.remove("route-planner-mode");
+  hideQuickRouteResultList();
+  closeAgentPanel();
+  openPlaceSheet();
+  if (startNavigation) startNavigationTracking();
+}

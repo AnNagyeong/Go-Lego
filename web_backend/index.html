@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>AccessNav Web</title>
-  <link rel="stylesheet" href="style.css?v=20261028-agent" />
+  <link rel="stylesheet" href="style.css?v=20261015-agent" />
 </head>
 <body>
   <div class="phone">
@@ -74,22 +74,22 @@
     </button>
     </div>
 
-    <!-- Agent floating action button and chat panel -->
-    <button id="agentFab" class="agent-fab" type="button" aria-label="Agent 열기" aria-controls="agentPanel" aria-expanded="false">
+    <!-- AI Agent floating action button and chat panel -->
+    <button id="agentFab" class="agent-fab" type="button" aria-label="AI Agent 열기" aria-controls="agentPanel" aria-expanded="false">
       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3a8 8 0 0 0-8 8v2a3 3 0 0 0 3 3h1v-6H7a5 5 0 0 1 10 0h-1v6h1a3 3 0 0 0 3-3v-2a8 8 0 0 0-8-8Z"/><path d="M8 19h5a3 3 0 0 0 3-3v-1"/></svg>
-      <span>Agent</span>
+      <span>AI</span>
     </button>
-    <section id="agentPanel" class="agent-panel hidden" aria-label="길 안내 Agent">
+    <section id="agentPanel" class="agent-panel hidden" aria-label="AI 길 안내 Agent">
       <header class="agent-panel-header">
         <div class="agent-panel-identity"><span class="agent-panel-avatar" aria-hidden="true">G</span><div><strong>고르고 Agent</strong><small>자연어 길 안내</small></div></div>
         <button id="agentCloseBtn" class="agent-close-btn" type="button" aria-label="Agent 닫기">×</button>
       </header>
       <div id="agentMessages" class="agent-messages" aria-live="polite">
-        <div class="agent-message agent-message-bot">가고 싶은 곳을 말씀해 주시면 지도에 경로를 표시합니다.<br><span>예: 본관에서 정보문화관으로 가고 싶어</span></div>
+        <div class="agent-message agent-message-bot">안녕하세요! 목적지를 말하면 Go-LeGo 길찾기로 연결해 드릴게요.<br><span>예: 정보문화관에서 도서관까지 길 안내해줘</span></div>
       </div>
       <div class="agent-shortcuts">
-        <button type="button" data-agent-question="한양여대 본관에서 정보문화관으로 가고 싶어">본관 → 정보문화관</button>
-        <button type="button" data-agent-question="정보문화관 사진 보여줘">정보문화관 사진</button>
+        <button type="button" data-agent-question="정보문화관에서 도서관까지 길 안내해줘">정보문화관 → 도서관</button>
+        <button type="button" data-agent-question="정보문화관 장애인 화장실 어디 있어?">장애인 화장실</button>
       </div>
       <form id="agentForm" class="agent-composer">
         <label class="agent-mobility-label" for="agentMobilityType">이동 유형</label>
@@ -201,6 +201,37 @@
     </div>
   </aside>
 </div>
+
+    <!-- 경로 안내 파노라마 패널 -->
+    <section id="panoGuide" class="pano-guide" aria-label="경로 파노라마 안내" hidden>
+      <button class="pano-guide-nav" id="panoPrevBtn" type="button" aria-label="이전 지점">‹</button>
+      <button class="pano-guide-thumb" id="panoThumbBtn" type="button" aria-label="파노라마 전체화면으로 보기" disabled>
+        <canvas id="panoCutCanvas" width="320" height="240" hidden></canvas>
+        <span class="pano-guide-empty" id="panoEmpty">불러오는 중...</span>
+      </button>
+      <div class="pano-guide-info" aria-live="polite">
+        <small id="panoStepLabel"></small>
+        <strong id="panoFromName"></strong>
+        <span id="panoToName"></span>
+        <em id="panoDirection"></em>
+      </div>
+      <button class="pano-guide-nav" id="panoNextBtn" type="button" aria-label="다음 지점">›</button>
+    </section>
+
+    <!-- 파노라마 전체화면 뷰어 -->
+    <div id="panoOverlay" class="pano-overlay" hidden>
+      <div class="pano-overlay-top">
+        <span id="panoViewerTitle"></span>
+        <button id="panoViewerClose" type="button">✕ 닫기</button>
+      </div>
+      <canvas id="panoViewerCanvas"></canvas>
+      <div id="panoViewerNotice" class="pano-overlay-notice" hidden></div>
+      <div class="pano-overlay-bottom">
+        <button id="panoViewerPrev" type="button">‹ 이전 지점</button>
+        <span>드래그로 시점 이동 · 두 손가락으로 확대</span>
+        <button id="panoViewerNext" type="button">다음 지점 ›</button>
+      </div>
+    </div>
 
     <!-- 하단 장소 시트 -->
     <div id="placeSheet" class="bottom-sheet expanded hidden">
@@ -316,6 +347,9 @@
   </div>
 
   <script src="https://dapi.kakao.com/v2/maps/sdk.js?appkey=__KAKAO_KEY__&libraries=services"></script>
-  <script src="script.js?v=20261028-agent"></script>
+  <script src="/socket.io/socket.io.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+  <script src="script.js?v=20261112-pano"></script>
+  <script src="panorama-guide.js?v=20261112-pano"></script>
 </body>
 </html>
