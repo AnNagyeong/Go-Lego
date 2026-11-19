@@ -3462,8 +3462,6 @@ body.dev-environment .dev-simulation-btn {
 #agentSendBtn:disabled { opacity:.55; cursor:wait; }
 .agent-composer p { grid-column:1/-1; margin:0; color:#7a7a7a; font-size:10px; }
 @media (max-width:480px) { .agent-fab { right:15px; bottom:92px; width:56px; height:56px; } .agent-panel { right:10px; bottom:158px; width:calc(100vw - 20px); height:min(65dvh,580px); min-height:340px; } }
-<<<<<<< HEAD
-=======
 
 /* ===== 경로 안내 파노라마 ===== */
 :root { --pano-guide-h: 96px; }
@@ -3490,4 +3488,3 @@ body.pano-guide-on .bottom-sheet { bottom: calc(86px + var(--pano-guide-h) + 8px
 .pano-overlay button { padding: 6px 12px; border: 1px solid #666; border-radius: 6px; background: none; color: #fff; font-size: 13px; cursor: pointer; }
 .pano-overlay button:disabled { opacity: 0.35; cursor: default; }
 .pano-overlay-notice { position: absolute; left: 50%; bottom: 72px; transform: translateX(-50%); padding: 8px 18px; border-radius: 20px; background: rgba(0, 0, 0, 0.65); color: #ddd; font-size: 13px; pointer-events: none; }
->>>>>>> e403084b4fde6670b7bff6f5ffa1c416bbd91060
