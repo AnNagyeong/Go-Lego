@@ -1161,10 +1161,16 @@ body.sheet-open .map-control-buttons {
   background: #f4c20d;
 }
 
+.safety-bar .risk {
+  width: 0;
+  flex: 0 0 0;
+  background: #f26a6a;
+}
+
 .safety-labels {
   display: flex;
   justify-content: flex-start;
-  gap: 24px;
+  gap: 16px;
   font-size: 12px;
   color: #666;
   margin-bottom: 11px;

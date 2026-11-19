@@ -43,6 +43,16 @@ let lastRouteRecalculationAt = 0;
 let navigationSimulationTimer = null;
 let navigationSimulationActive = false;
 
+// 출발지가 GPS 로 자동 지정된 것인지(true), 사용자가 직접 고른 것인지 구분한다.
+let autoStartFromGps = false;
+// 사용자가 고른 출발지 근처(100m)에 GPS 가 한 번이라도 도착했는지
+let explicitStartReached = false;
+// 경로 이탈이 연속으로 감지된 횟수
+let offRouteReadings = 0;
+// 안내 중 지도가 내 위치를 따라갈지 (지도를 직접 끌면 꺼짐)
+let followUserLocation = true;
+let mapFollowListenerAttached = false;
+
 if (!restoredMapViewFromQuery) {
   centerMapOnCurrentLocation({
     setStartPlace: false,
@@ -87,7 +97,8 @@ const GPS_JUMP_DISTANCE_METERS = 80;
 const GPS_JUMP_WINDOW_MS = 3000;
 const GPS_WALKING_MAX_SPEED_MPS = 12;
 const ROUTE_RECALCULATION_DISTANCE = 45;
-const ROUTE_RECALCULATION_COOLDOWN_MS = 15000;
+const ROUTE_RECALCULATION_COOLDOWN_MS = 30000;
+const OFF_ROUTE_CONFIRM_READINGS = 3;
 const GPS_SIMULATION_STEP_METERS = 8;
 const GPS_SIMULATION_INTERVAL_MS = 700;
 const DEVELOPMENT_GPS_SIMULATION =
@@ -1939,6 +1950,7 @@ async function findQuickRoute() {
     clearDangerZones();
 
     startPlace = resolvedStartPlace;
+    autoStartFromGps = false;
     endPlace = resolvedEndPlace;
     selectedPlaceForRoute = null;
     currentRouteData = null;
@@ -1970,6 +1982,7 @@ function swapQuickRouteInputs() {
     const nextStartPlace = endPlace;
     endPlace = startPlace;
     startPlace = nextStartPlace;
+    autoStartFromGps = false;
     currentRouteData = null;
     clearRoutePolylines();
     clearDangerZones();
@@ -2267,6 +2280,7 @@ function showPlaceSelectionPanel(place) {
 function setRouteEndpoint(place, role) {
   if (role === "start") {
     startPlace = place;
+    autoStartFromGps = false;
     updateStartMarker(place);
   } else {
     endPlace = place;
@@ -2570,54 +2584,59 @@ function updateSelectedRouteSheet(route) {
 }
 
 function updateSafetyRatio(route) {
-  const ratio = calculateSafetyRatio(route.path || []);
-  const safeBar = document.querySelector(".safety-bar .safe");
-  const warnBar = document.querySelector(".safety-bar .warn");
-  const labels = document.querySelectorAll(".safety-labels span");
+  const serverRatio = route?.safety;
+  const hasServerRatio =
+    serverRatio &&
+    [serverRatio.safe, serverRatio.caution, serverRatio.danger].every((value) => Number.isFinite(Number(value)));
+  const ratio = hasServerRatio
+    ? {
+        safe: Number(serverRatio.safe),
+        warn: Number(serverRatio.caution),
+        danger: Number(serverRatio.danger),
+      }
+    : calculateSafetyRatio(route?.path || []);
 
-  if (safeBar) {
-    safeBar.style.width = `${ratio.safe}%`;
-    safeBar.style.flexBasis = `${ratio.safe}%`;
-  }
-  if (warnBar) {
-    warnBar.style.width = `${ratio.warn}%`;
-    warnBar.style.flexBasis = `${ratio.warn}%`;
-  }
+  const bars = [
+    [document.querySelector(".safety-bar .safe"), ratio.safe],
+    [document.querySelector(".safety-bar .warn"), ratio.warn],
+    [document.querySelector(".safety-bar .risk"), ratio.danger],
+  ];
+  bars.forEach(([bar, value]) => {
+    if (!bar) return;
+    bar.style.width = `${value}%`;
+    bar.style.flexBasis = `${value}%`;
+  });
+
+  const labels = document.querySelectorAll(".safety-labels span");
   if (labels[0]) labels[0].textContent = `안전 ${ratio.safe}%`;
   if (labels[1]) labels[1].textContent = `주의 ${ratio.warn}%`;
+  if (labels[2]) labels[2].textContent = `위험 ${ratio.danger}%`;
 }
 
+// 서버가 안전도를 주지 않는 경로(Agent 경로 등)용 대체 계산: 경로 선 색과 같은 기준
 function calculateSafetyRatio(path) {
   if (path.length < 2) {
-    return { safe: 100, warn: 0 };
+    return { safe: 100, warn: 0, danger: 0 };
   }
 
-  let safeDistance = 0;
-  let warnDistance = 0;
+  const length = { safe: 0, warn: 0, danger: 0 };
 
   for (let i = 0; i < path.length - 1; i += 1) {
-    const fromNode = path[i];
-    const toNode = path[i + 1];
-    const distance = getDistance(fromNode.lat, fromNode.lng, toNode.lat, toNode.lng);
-    const color = routeSegmentColor(fromNode, toNode);
-
-    if (color === "#48d10f") {
-      safeDistance += distance;
-    } else {
-      warnDistance += distance;
-    }
+    const distance = getDistance(path[i].lat, path[i].lng, path[i + 1].lat, path[i + 1].lng);
+    const color = routeSegmentColor(path[i], path[i + 1]);
+    if (color === "#f26a6a") length.danger += distance;
+    else if (color === "#f4c20d") length.warn += distance;
+    else length.safe += distance;
   }
 
-  const total = safeDistance + warnDistance;
+  const total = length.safe + length.warn + length.danger;
   if (!total) {
-    return { safe: 100, warn: 0 };
+    return { safe: 100, warn: 0, danger: 0 };
   }
 
-  const safe = Math.round((safeDistance / total) * 100);
-  return {
-    safe,
-    warn: 100 - safe,
-  };
+  const warn = Math.round((length.warn / total) * 100);
+  const danger = Math.round((length.danger / total) * 100);
+  return { safe: Math.max(0, 100 - warn - danger), warn, danger };
 }
 
 function getDistance(lat1, lng1, lat2, lng2) {
@@ -2844,9 +2863,29 @@ function snapToRoute(location, route) {
   };
 }
 
+function isAutoGpsStart() {
+  if (!startPlace) return false;
+  const name = String(startPlace.place_name || "").replace(/\s/g, "");
+  return autoStartFromGps || startPlace.source === "gps" || name === "현재위치";
+}
+
+function keepsChosenStart() {
+  return Boolean(currentRouteData?.preserveAgentRouteStart) || (Boolean(startPlace) && !isAutoGpsStart());
+}
+
+function attachMapFollowListener() {
+  if (mapFollowListenerAttached) return;
+  mapFollowListenerAttached = true;
+  kakao.maps.event.addListener(map, "dragstart", () => {
+    if (navigationMode) followUserLocation = false;
+  });
+}
+
 async function handleRouteDeviation(location) {
-  if (!endPlace || Date.now() - lastRouteRecalculationAt < ROUTE_RECALCULATION_COOLDOWN_MS) return;
+  if (!endPlace || keepsChosenStart()) return;
+  if (Date.now() - lastRouteRecalculationAt < ROUTE_RECALCULATION_COOLDOWN_MS) return;
   lastRouteRecalculationAt = Date.now();
+  autoStartFromGps = true;
   startPlace = {
     place_name: "현재 위치",
     x: location.longitude,
@@ -2933,6 +2972,7 @@ function centerMapOnCurrentLocation({
 }
 
 function moveToCurrentLocation() {
+  followUserLocation = true;
   centerMapOnCurrentLocation({
     setStartPlace: false,
     updatePanel: false,
@@ -2964,6 +3004,10 @@ function startNavigationTracking() {
   navigationRouteInitialized = false;
   lastAcceptedLocation = null;
   lastRouteRecalculationAt = 0;
+  offRouteReadings = 0;
+  explicitStartReached = false;
+  followUserLocation = true;
+  attachMapFollowListener();
   document.body.classList.add("navigation-mode");
   window.PanoGuide?.start(currentRouteData?.selectedRoute || currentRouteData?.routes?.[0]);
   updateStartRouteButtonState();
@@ -2997,34 +3041,38 @@ async function processNavigationLocation(rawLocation, { initializeRoute = true }
   const validation = validateLocation(rawLocation);
   if (!validation.valid || isLocationJump(lastAcceptedLocation, rawLocation)) return;
 
-  // Agent에서 출발지를 명시한 경우, GPS가 그 출발지와 멀리 떨어져 있으면
-  // 현재 위치 기준으로 지도/잔여거리 UI를 덮어쓰지 않습니다.
-  // 사용자가 지정 출발지 근처(100m 이내)에 도착하면 GPS 안내를 이어갑니다.
-  if (currentRouteData?.preserveAgentRouteStart) {
-    const activeRoute = currentRouteData.selectedRoute || currentRouteData.routes?.[0];
-    const routeStart = activeRoute?.path?.[0];
-    if (routeStart) {
+  // 사용자가 직접 고른 출발지(현재 위치가 아닌 출발지)는 GPS 로 덮어쓰지 않는다.
+  // GPS 가 출발지에서 100m 이상 떨어져 있으면 지도 이동/경로 재계산 없이 내 위치 표시만 갱신하고,
+  // 출발지 근처에 도착하면 그때부터 GPS 안내를 이어간다.
+  const keepStart = keepsChosenStart();
+  if (keepStart && !navigationSimulationActive && !explicitStartReached) {
+    const guardRoute = currentRouteData?.selectedRoute || currentRouteData?.routes?.[0];
+    const guardStart = guardRoute?.path?.[0];
+    if (guardStart) {
       const distanceFromExplicitStart = getDistance(
         rawLocation.latitude,
         rawLocation.longitude,
-        Number(routeStart.lat),
-        Number(routeStart.lng)
+        Number(guardStart.lat),
+        Number(guardStart.lng)
       );
       if (!Number.isFinite(distanceFromExplicitStart) || distanceFromExplicitStart > 100) {
+        updateCurrentLocationMarker(rawLocation.latitude, rawLocation.longitude, rawLocation.heading ?? null);
         return;
       }
     }
+    explicitStartReached = true;
   }
 
   if (
     initializeRoute &&
     !navigationRouteInitialized &&
-    !currentRouteData?.preserveAgentRouteStart
+    !keepStart
   ) {
     navigationRouteInitialized = true;
     const entrance = await findNearbyEntrance(rawLocation);
     const correctedStart = snapToEntrance(rawLocation, entrance);
     if (endPlace) {
+      autoStartFromGps = true;
       startPlace = correctedStart.snappedTo === "entrance"
         ? { ...correctedStart.entrance, source: "mapservice" }
         : {
@@ -3050,17 +3098,25 @@ async function processNavigationLocation(rawLocation, { initializeRoute = true }
 
   if (
     !navigationSimulationActive &&
-    !currentRouteData?.preserveAgentRouteStart &&
+    !keepStart &&
     Number.isFinite(displayLocation.routeDistance) &&
     displayLocation.routeDistance > ROUTE_RECALCULATION_DISTANCE
   ) {
-    await handleRouteDeviation(rawLocation);
+    // GPS 튐 한 번으로 경로를 다시 만들지 않도록 연속으로 벗어났을 때만 재계산한다.
+    offRouteReadings += 1;
+    if (offRouteReadings >= OFF_ROUTE_CONFIRM_READINGS) {
+      offRouteReadings = 0;
+      await handleRouteDeviation(rawLocation);
+    }
+  } else {
+    offRouteReadings = 0;
   }
 
-  if (navigationMode) {
+  if (navigationMode && followUserLocation) {
     if (typeof map.panTo === "function") map.panTo(currentPosition);
     else map.setCenter(currentPosition);
-    map.setLevel(3);
+    // 확대 수준은 안내 시작 직후 한 번만 맞추고, 이후 사용자가 조절한 값을 유지한다.
+    if (!lastNavigationPosition) map.setLevel(3);
   }
 
   lastNavigationPosition = currentPosition;
@@ -3156,6 +3212,8 @@ function stopNavigationTracking({ silent = false } = {}) {
   lastNavigationPosition = null;
   lastAcceptedLocation = null;
   navigationRouteInitialized = false;
+  offRouteReadings = 0;
+  explicitStartReached = false;
   updateStartRouteButtonState();
 
   if (!silent) {
@@ -3458,11 +3516,13 @@ function renderRoutePanel(title, subtitle = "") {
       <div class="safety-bar">
         <div class="safe"></div>
         <div class="warn"></div>
+        <div class="risk"></div>
       </div>
 
       <div class="safety-labels">
         <span>&#50504;&#51204;</span>
         <span>&#51452;&#51032;</span>
+        <span>&#50948;&#54744;</span>
       </div>
 
       <div class="sheet-actions">
@@ -3898,6 +3958,10 @@ function routeSegmentColor(fromNode, toNode) {
 }
 
 function routeDangerZones(route) {
+  if (Array.isArray(route?.dangerSpots)) {
+    return route.dangerSpots;
+  }
+
   if (Array.isArray(route?.dangerZones) && route.dangerZones.length) {
     return route.dangerZones;
   }
@@ -4260,6 +4324,7 @@ function showAgentRouteOnMap(payload, route, startNavigation = false) {
     return;
   }
   startPlace = nextStart;
+  autoStartFromGps = false;
   endPlace = nextEnd;
   selectedMobilityType = agentMobilityType?.value || selectedMobilityType;
   syncQuickRouteInputs();

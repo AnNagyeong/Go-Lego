@@ -632,8 +632,7 @@ app.get("/api/walking-route", async (req, res) => {
     let hitZones = [];
 
     try {
-      const rawReports = await fetchDangerReportsFromMapService();
-      const dangerZones = normalizeDangerZones(rawReports);
+      const dangerZones = normalizeDangerZones(await fetchApprovedDangerReports());
       hitZones = findDangerZonesOnRoute(routePath, dangerZones);
     } catch (err) {
       console.warn("MapService 생략:", err.message);
@@ -740,7 +739,21 @@ app.get("/api/weather", async (req, res) => {
   }
 });
 
-async function fetchWalkingRouteFromORS(origin, destination) {
+function buildAvoidPolygons(zones) {
+  const polygons = zones.map((zone) => {
+    const half = Number(zone.radius || 20) + 3;
+    const dLat = half / 111320;
+    const dLng = half / (111320 * Math.cos((zone.lat * Math.PI) / 180));
+    const west = zone.lng - dLng;
+    const east = zone.lng + dLng;
+    const south = zone.lat - dLat;
+    const north = zone.lat + dLat;
+    return [[[west, south], [east, south], [east, north], [west, north], [west, south]]];
+  });
+  return { type: "MultiPolygon", coordinates: polygons };
+}
+
+async function fetchWalkingRouteFromORS(origin, destination, { avoidZones = [] } = {}) {
   if (!ORS_API_KEY) {
     throw new Error("ORS_API_KEY가 .env에 설정되지 않았습니다.");
   }
@@ -758,6 +771,7 @@ async function fetchWalkingRouteFromORS(origin, destination) {
           [Number(origin.x), Number(origin.y)],
           [Number(destination.x), Number(destination.y)],
         ],
+        ...(avoidZones.length ? { options: { avoid_polygons: buildAvoidPolygons(avoidZones) } } : {}),
       }),
     }
   );
@@ -773,59 +787,83 @@ async function fetchWalkingRouteFromORS(origin, destination) {
 
 // ================= 배리어프리 키오스크 API =================
 
-async function buildOrsAccessRoute(startName, destinationName, startPoint, destinationPoint) {
-  const routeData = await fetchWalkingRouteFromORS(
-    { x: startPoint.lng, y: startPoint.lat },
-    { x: destinationPoint.lng, y: destinationPoint.lat }
-  );
+function makeOrsRoute(id, title, routeData, ctx) {
   const feature = routeData.features?.[0];
   const coords = feature?.geometry?.coordinates || [];
   const summary = feature?.properties?.summary || {};
-  const routePath = coords.map(([lng, lat], index) => ({
+  const dense = densifyRoutePath(coords.map(([lng, lat]) => ({ lat, lng })));
+  const path = dense.map((point, index) => ({
     id: `ors-${index}`,
     name:
       index === 0
-        ? startName || "출발지"
-        : index === coords.length - 1
-          ? destinationName || "목적지"
+        ? ctx.startName || "출발지"
+        : index === dense.length - 1
+          ? ctx.destinationName || "목적지"
           : "도보 경로",
-    lat,
-    lng,
+    lat: point.lat,
+    lng: point.lng,
     type: "path",
   }));
 
-  let hitZones = [];
+  const featureNodes = ctx.graphData
+    ? collectRouteFeatureNodes(path, ctx.graphData, ROUTE_FEATURE_RADIUS_M)
+    : [];
 
-  try {
-    const rawReports = await fetchDangerReportsFromMapService();
-    const dangerZones = normalizeDangerZones(rawReports);
-    hitZones = findDangerZonesOnRoute(routePath, dangerZones);
-  } catch (err) {
-    console.warn("MapService 위험 구간 조회 실패:", err.message);
-  }
-
-  let routeFeatures = {
-    stairs: 0,
-    ramps: 0,
-    elevators: 0,
-    crosswalks: 0,
+  const route = {
+    id,
+    title,
+    distance: Math.round(Number(summary.distance || 0)),
+    duration: Math.max(1, Math.ceil(Number(summary.duration || 0) / 60)),
+    features: countRouteFeatures(featureNodes),
+    path,
   };
 
+  return finalizeRoute(route, ctx.zones, featureNodes);
+}
+
+async function buildOrsAccessRoute(startName, destinationName, startPoint, destinationPoint) {
+  const zones = normalizeDangerZones(await fetchApprovedDangerReports());
+  let graphData = null;
+
   try {
-    const graphData = await loadMapServiceGraph();
-    routeFeatures = estimateRouteFeaturesFromGraph(routePath, graphData);
+    graphData = await loadMapServiceGraph();
   } catch (err) {
     console.warn("MapService 경로 시설 개수 조회 실패:", err.message);
   }
 
-  const dangerPath = routePath.map((point) => ({
-    ...point,
-    type: hitZones.some(
-      (zone) => getDistance(point.lat, point.lng, zone.lat, zone.lng) <= zone.radius
-    )
-      ? "danger"
-      : point.type,
-  }));
+  const ctx = { startName, destinationName, graphData, zones };
+  const origin = { x: startPoint.lng, y: startPoint.lat };
+  const destination = { x: destinationPoint.lng, y: destinationPoint.lat };
+
+  const baseData = await fetchWalkingRouteFromORS(origin, destination);
+  const baseRoute = makeOrsRoute("walking", "도보 경로", baseData, ctx);
+  let routes = [baseRoute];
+
+  // 승인된 위험 제보 구역을 지나가면, 그 구역을 피하는 경로를 추천 경로로 먼저 보여준다.
+  if (baseRoute.dangerZones.length) {
+    const avoidZones = baseRoute.dangerZones.filter(
+      (zone) =>
+        getDistance(startPoint.lat, startPoint.lng, zone.lat, zone.lng) > zone.radius + 5 &&
+        getDistance(destinationPoint.lat, destinationPoint.lng, zone.lat, zone.lng) > zone.radius + 5
+    );
+
+    if (avoidZones.length) {
+      try {
+        const avoidData = await fetchWalkingRouteFromORS(origin, destination, { avoidZones });
+        const avoidRoute = makeOrsRoute("accessible", "추천 경로 (위험 구간 우회)", avoidData, ctx);
+        const hitsFewer = avoidRoute.dangerZones.length < baseRoute.dangerZones.length;
+        const notTooLong = avoidRoute.distance <= baseRoute.distance * 1.8 + 100;
+
+        if (hitsFewer && notTooLong) {
+          baseRoute.id = "shortest";
+          baseRoute.title = "최단 경로";
+          routes = [avoidRoute, baseRoute];
+        }
+      } catch (err) {
+        console.warn("위험 구간 우회 경로 조회 실패:", err.message);
+      }
+    }
+  }
 
   return {
     ok: true,
@@ -842,18 +880,7 @@ async function buildOrsAccessRoute(startName, destinationName, startPoint, desti
       lat: destinationPoint.lat,
       lng: destinationPoint.lng,
     },
-    routes: [
-      {
-        id: "walking",
-        title: "도보 경로",
-        distance: Math.round(Number(summary.distance || 0)),
-        duration: Math.max(1, Math.ceil(Number(summary.duration || 0) / 60)),
-        dangerCount: routeFeatures.stairs + hitZones.length,
-        dangerZones: hitZones,
-        features: routeFeatures,
-        path: dangerPath,
-      },
-    ],
+    routes,
   };
 }
 
@@ -1433,36 +1460,227 @@ async function handleCreateAccessibilityReport(req, res) {
 }
 
 
-async function fetchDangerReportsFromMapService() {
-  const url = `${MAPSERVICE_BASE_URL}${MAPSERVICE_REPORTS_ENDPOINT}`;
+// ================= 위험 구간(승인된 제보) 계산 =================
+// 사용자가 제보하고 관리자가 승인한 accessibility_reports 를 위험 구역으로 사용한다.
+const DANGER_ZONE_RADIUS_M = 20; // 위험 구역 반경
+const DANGER_ZONE_MERGE_M = 15; // 이 거리 안의 제보는 같은 구역으로 합친다
+const STAIR_DANGER_RADIUS_M = 10; // 계단 노드 주변을 위험으로 칠하는 반경
+const CAUTION_NODE_RADIUS_M = 8; // 횡단보도/경사로/엘리베이터 주변을 주의로 칠하는 반경
+const ROUTE_FEATURE_RADIUS_M = 15; // 경로 주변 시설로 인정하는 거리
+const ROUTE_POINT_SPACING_M = 8; // ORS 경로를 이 간격으로 촘촘하게 만든다
+const FEATURE_NODE_KEYS = {
+  stair: "stairs",
+  ramp: "ramps",
+  elevator: "elevators",
+  crosswalk: "crosswalks",
+};
 
+async function fetchApprovedDangerReports() {
   try {
-    const response = await fetch(url);
-    if (!response.ok) return [];
-
-    const data = await response.json();
-    return Array.isArray(data) ? data : data.data || [];
-  } catch {
+    const [rows] = await db.execute(
+      `SELECT id, place_name, type, detail, lat, lng
+       FROM accessibility_reports
+       WHERE status = 'approved' AND lat IS NOT NULL AND lng IS NOT NULL`
+    );
+    return rows;
+  } catch (error) {
+    console.warn("승인된 위험 제보 조회 실패:", error.message);
     return [];
   }
 }
 
-function normalizeDangerZones(rawReports) {
-  return rawReports
-    .map((r) => ({
-      lat: Number(r.latitude ?? r.lat),
-      lng: Number(r.longitude ?? r.lng),
-      radius: 25,
-    }))
-    .filter((z) => !Number.isNaN(z.lat) && !Number.isNaN(z.lng));
+function normalizeDangerZones(rows) {
+  const zones = [];
+
+  (rows || []).forEach((row) => {
+    const rawLat = row.latitude ?? row.lat;
+    const rawLng = row.longitude ?? row.lng;
+    if (rawLat === null || rawLat === undefined || rawLng === null || rawLng === undefined) return;
+
+    const lat = Number(rawLat);
+    const lng = Number(rawLng);
+    if (!Number.isFinite(lat) || !Number.isFinite(lng)) return;
+
+    const sameSpot = zones.find(
+      (zone) => getDistance(zone.lat, zone.lng, lat, lng) <= DANGER_ZONE_MERGE_M
+    );
+    if (sameSpot) {
+      sameSpot.reportCount += 1;
+      return;
+    }
+
+    const type = String(row.type || "").trim();
+    zones.push({
+      id: String(row.id ?? `${lat},${lng}`),
+      name: row.place_name || row.placeName || "위험 구간",
+      type,
+      lat,
+      lng,
+      radius: DANGER_ZONE_RADIUS_M,
+      reportCount: 1,
+      // 경로 탐색에서 이 구역을 지나는 간선에 더하는 가중치(미터 환산)
+      penalty: type === "공사 통제" ? 400 : 150,
+    });
+  });
+
+  return zones;
 }
 
 function findDangerZonesOnRoute(routePath, zones) {
-  return zones.filter((zone) =>
-    routePath.some(
-      (p) => getDistance(p.lat, p.lng, zone.lat, zone.lng) <= zone.radius
-    )
+  return zones.filter(
+    (zone) => distanceFromPointToRoute(zone, routePath) <= zone.radius
   );
+}
+
+function densifyRoutePath(points, spacing = ROUTE_POINT_SPACING_M) {
+  const dense = [];
+
+  points.forEach((point, index) => {
+    dense.push(point);
+    const next = points[index + 1];
+    if (!next) return;
+
+    const gaps = Math.floor(getDistance(point.lat, point.lng, next.lat, next.lng) / spacing);
+    for (let step = 1; step <= gaps; step += 1) {
+      const ratio = step / (gaps + 1);
+      dense.push({
+        lat: point.lat + (next.lat - point.lat) * ratio,
+        lng: point.lng + (next.lng - point.lng) * ratio,
+      });
+    }
+  });
+
+  return dense;
+}
+
+function collectRouteFeatureNodes(routePath, graphData, threshold = ROUTE_FEATURE_RADIUS_M) {
+  if (!Array.isArray(routePath) || routePath.length < 2 || !graphData?.nodes?.length) {
+    return [];
+  }
+
+  return graphData.nodes.filter(
+    (node) =>
+      FEATURE_NODE_KEYS[node.type] &&
+      distanceFromPointToRoute(node, routePath) <= threshold
+  );
+}
+
+function countRouteFeatures(nodes) {
+  const features = { stairs: 0, ramps: 0, elevators: 0, crosswalks: 0 };
+  nodes.forEach((node) => {
+    const key = FEATURE_NODE_KEYS[node.type];
+    if (key) features[key] += 1;
+  });
+  return features;
+}
+
+// 위험 구역 안을 지나는 구간의 양 끝 점을 danger 로, ORS 경로 주변 시설 노드는 해당 type 으로 표시한다.
+function markRouteHazards(path, zones, featureNodes = []) {
+  const marked = path.map((point) => ({ ...point }));
+
+  zones.forEach((zone) => {
+    for (let i = 0; i < marked.length - 1; i += 1) {
+      if (distanceFromPointToSegment(zone, marked[i], marked[i + 1]) <= zone.radius) {
+        marked[i].type = "danger";
+        marked[i + 1].type = "danger";
+      }
+    }
+  });
+
+  featureNodes.forEach((node) => {
+    const radius = node.type === "stair" ? STAIR_DANGER_RADIUS_M : CAUTION_NODE_RADIUS_M;
+    marked.forEach((point) => {
+      if (point.type === "danger") return;
+      if (getDistance(point.lat, point.lng, node.lat, node.lng) <= radius) {
+        point.type = node.type;
+      }
+    });
+  });
+
+  return marked;
+}
+
+function buildDangerSpots(hitZones, stairNodes) {
+  const spots = hitZones.map((zone) => ({
+    id: zone.id,
+    name: zone.name,
+    kind: "report",
+    type: zone.type,
+    lat: zone.lat,
+    lng: zone.lng,
+    radius: zone.radius,
+    reportCount: zone.reportCount,
+  }));
+
+  // 같은 계단의 위/아래 노드가 둘로 세어지지 않도록 8m 안은 한 곳으로 합친다.
+  const stairSpots = [];
+  stairNodes.forEach((node) => {
+    if (hitZones.some((zone) => getDistance(zone.lat, zone.lng, node.lat, node.lng) <= zone.radius)) return;
+    if (stairSpots.some((spot) => getDistance(spot.lat, spot.lng, node.lat, node.lng) <= 8)) return;
+    stairSpots.push({
+      id: String(node.id),
+      name: node.name || "계단",
+      kind: "stair",
+      type: "stair",
+      lat: node.lat,
+      lng: node.lng,
+      radius: 13,
+    });
+  });
+
+  return [...spots, ...stairSpots];
+}
+
+function pathSegmentLevel(from, to) {
+  const types = [from?.type, to?.type];
+  if (types.includes("stair") || types.includes("danger")) return "danger";
+  if (types.some((type) => ["crosswalk", "ramp", "elevator"].includes(type))) return "caution";
+  return "safe";
+}
+
+// 경로 선 색(초록/노랑/빨강)과 같은 기준으로, 구간 길이 비율을 안전/주의/위험 %로 계산한다.
+function computeRouteSafety(path) {
+  const length = { safe: 0, caution: 0, danger: 0 };
+
+  for (let i = 0; i < path.length - 1; i += 1) {
+    const distance = getDistance(path[i].lat, path[i].lng, path[i + 1].lat, path[i + 1].lng);
+    length[pathSegmentLevel(path[i], path[i + 1])] += distance;
+  }
+
+  const total = length.safe + length.caution + length.danger;
+  if (!total) return { safe: 100, caution: 0, danger: 0 };
+
+  const keys = ["safe", "caution", "danger"];
+  const exact = keys.map((key) => (length[key] / total) * 100);
+  const result = exact.map(Math.floor);
+  let remainder = 100 - result.reduce((sum, value) => sum + value, 0);
+  exact
+    .map((value, index) => ({ index, fraction: value - Math.floor(value) }))
+    .sort((a, b) => b.fraction - a.fraction)
+    .forEach(({ index }) => {
+      if (remainder > 0) {
+        result[index] += 1;
+        remainder -= 1;
+      }
+    });
+
+  return { safe: result[0], caution: result[1], danger: result[2] };
+}
+
+// 경로에 위험 구역/시설 정보를 붙이고 위험 수와 안전도를 확정한다.
+function finalizeRoute(route, zones, featureNodes = null) {
+  const hitZones = findDangerZonesOnRoute(route.path, zones || []);
+  const stairNodes = featureNodes
+    ? featureNodes.filter((node) => node.type === "stair")
+    : route.path.filter((node) => node.type === "stair");
+  const spots = buildDangerSpots(hitZones, stairNodes);
+
+  route.path = markRouteHazards(route.path, hitZones, featureNodes || []);
+  route.dangerZones = hitZones;
+  route.dangerSpots = spots;
+  route.dangerCount = spots.length;
+  route.safety = computeRouteSafety(route.path);
+  return route;
 }
 
 function getDistance(lat1, lng1, lat2, lng2) {
@@ -1647,6 +1865,7 @@ async function handleAccessRoutes(req, res) {
         error: "출발지와 목적지가 같습니다.",
       });
     }
+    const dangerZones = normalizeDangerZones(await fetchApprovedDangerReports());
     const shortest = findTargetPath(
       startTarget,
       destinationTarget,
@@ -1657,7 +1876,7 @@ async function handleAccessRoutes(req, res) {
       startTarget,
       destinationTarget,
       graphData,
-      { mobilityType, optimize: "accessible" }
+      { mobilityType, optimize: "accessible", dangerZones }
     );
 
     const routes = [
@@ -1686,6 +1905,8 @@ async function handleAccessRoutes(req, res) {
         error: "사용 가능한 도보 경로가 없습니다.",
       });
     }
+
+    routes.forEach((route) => finalizeRoute(route, dangerZones));
 
     res.json({
       ok: true,
@@ -2106,16 +2327,30 @@ function dijkstra(startId, endId, graphData, options = {}) {
   const isBlocked = (nodeId) =>
     profile.blockStairs && /stair|계단/i.test(graphData.nodeMap[nodeId]?.type || "");
 
+  // 승인된 위험 제보 구역을 지나는 간선은 추천(accessible) 경로 탐색에서 비용을 높여 우회하게 한다.
+  const dangerZones = options.optimize === "accessible" ? options.dangerZones || [] : [];
+  const zonePenalty = (edge) => {
+    if (!dangerZones.length) return 0;
+    const a = graphData.nodeMap[edge.from];
+    const b = graphData.nodeMap[edge.to];
+    if (!a || !b) return 0;
+    return dangerZones.reduce(
+      (sum, zone) => sum + (distanceFromPointToSegment(zone, a, b) <= zone.radius ? zone.penalty : 0),
+      0
+    );
+  };
+
   graphData.edges.forEach((edge) => {
     if (!edge.isActive || isBlocked(edge.from) || isBlocked(edge.to)) return;
     if (edge.slope !== null && Math.abs(edge.slope) > profile.maxSlope) return;
     if (edge.pathWidth !== null && edge.pathWidth > 0 && edge.pathWidth < profile.minWidth) return;
     if (!graph[edge.from]) graph[edge.from] = [];
     if (!graph[edge.to]) graph[edge.to] = [];
-    const penalty = options.optimize === "accessible"
-      ? Math.abs(edge.slope || 0) * profile.slopePenalty +
-        Math.max(0, (edge.effort || 1) - 1) * profile.effortPenalty
-      : 0;
+    const penalty =
+      (options.optimize === "accessible"
+        ? Math.abs(edge.slope || 0) * profile.slopePenalty +
+          Math.max(0, (edge.effort || 1) - 1) * profile.effortPenalty
+        : 0) + zonePenalty(edge);
     graph[edge.from].push({ node: edge.to, weight: edge.weight, cost: edge.weight + penalty });
     graph[edge.to].push({ node: edge.from, weight: edge.weight, cost: edge.weight + penalty });
   });
@@ -2191,38 +2426,8 @@ function formatAccessRoute(id, title, route, graphData) {
   };
 }
 
-function estimateRouteFeaturesFromGraph(routePath, graphData, thresholdMeters = 25) {
-  const features = {
-    stairs: 0,
-    ramps: 0,
-    elevators: 0,
-    crosswalks: 0,
-  };
-
-  if (!Array.isArray(routePath) || routePath.length < 2 || !graphData?.nodes?.length) {
-    return features;
-  }
-
-  const typeToKey = {
-    stair: "stairs",
-    ramp: "ramps",
-    elevator: "elevators",
-    crosswalk: "crosswalks",
-  };
-  const countedNodeIds = new Set();
-
-  graphData.nodes.forEach((node) => {
-    const key = typeToKey[node.type];
-    if (!key || countedNodeIds.has(node.id)) return;
-
-    const distance = distanceFromPointToRoute(node, routePath);
-    if (distance <= thresholdMeters) {
-      countedNodeIds.add(node.id);
-      features[key] += 1;
-    }
-  });
-
-  return features;
+function estimateRouteFeaturesFromGraph(routePath, graphData, thresholdMeters = ROUTE_FEATURE_RADIUS_M) {
+  return countRouteFeatures(collectRouteFeatureNodes(routePath, graphData, thresholdMeters));
 }
 
 function distanceFromPointToRoute(point, routePath) {
