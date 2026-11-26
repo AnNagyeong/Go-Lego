@@ -2573,13 +2573,15 @@ function syncRouteEndpoints(data, route) {
 function updateSelectedRouteSheet(route) {
   const routeLabel = route.id === "accessible" ? "추천 경로" : "최단 경로";
   const dangerCount = Number(route.dangerCount ?? route.danger_count ?? 0);
-  renderRoutePanel(
+  const routeSheetArgs = [
     `${endPlace.place_name}까지 ${routeLabel}`,
     `위험 구간 ${Number.isFinite(dangerCount) ? dangerCount : 0}곳 · ` +
       (route.avoidedZones?.length ? `위험 구역 ${route.avoidedZones.length}곳 우회 · ` : "") +
       `계단 ${Number(route.features?.stairs || 0)}개 · 경사로 ${Number(route.features?.ramps || 0)}개 · ` +
       `엘리베이터 ${Number(route.features?.elevators || 0)}개 · 횡단보도 ${Number(route.features?.crosswalks || 0)}개`
-  );
+  ];
+  renderRoutePanel(...routeSheetArgs);
+  window.PanoGuide?.attachPreview(route);
 }
 
 function updateSafetyRatio(route) {
@@ -3537,6 +3539,7 @@ function renderRoutePanel(title, subtitle = "") {
     `;
 
   panelContent.innerHTML = `
+    ${hasBothEndpoints ? '<div class="pano-preview-slot" hidden></div>' : ""}
     <p class="sheet-label">&#44221;&#47196; &#49444;&#51221;</p>
     <h3 id="placeName">${escapeHTML(title)}</h3>
     <p id="placeAddress" class="muted">${escapeHTML(subtitle)}</p>
@@ -3987,7 +3990,7 @@ function dangerZonesFromRoute(path) {
   return [...zones.values()];
 }
 
-// 위험 지점은 큰 원 대신 작은 경고 삼각형으로 표시하고, 누르면 왜 위험한지 보여준다.
+// 위험 지점 경고 삼각형으로 표시, 누르면 왜 위험한지 보여줌
 let dangerInfoWindow = null;
 
 function dangerTriangleImage(size = 26) {

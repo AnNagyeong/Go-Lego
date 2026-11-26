@@ -3488,3 +3488,24 @@ body.pano-guide-on .bottom-sheet { bottom: calc(86px + var(--pano-guide-h) + 8px
 .pano-overlay button { padding: 6px 12px; border: 1px solid #666; border-radius: 6px; background: none; color: #fff; font-size: 13px; cursor: pointer; }
 .pano-overlay button:disabled { opacity: 0.35; cursor: default; }
 .pano-overlay-notice { position: absolute; left: 50%; bottom: 72px; transform: translateX(-50%); padding: 8px 18px; border-radius: 20px; background: rgba(0, 0, 0, 0.65); color: #ddd; font-size: 13px; pointer-events: none; }
+
+/* 위쪽 출발/도착 입력창이 보일 때는 아래 시트의 출발/도착 줄을 숨긴다 (중복 방지) */
+@media (min-width: 481px) {
+  .route-endpoint-summary { display: none; }
+}
+body.route-planner-mode .route-endpoint-summary { display: none; }
+
+/* ===== 경로 시트 파노라마 미리보기 ===== */
+.pano-preview-slot { margin: 0 0 12px; }
+.pano-preview-slot[hidden], .pano-preview canvas[hidden], .pano-preview-empty[hidden] { display: none; }
+.pano-preview { position: relative; height: 112px; border-radius: 14px; overflow: hidden; background: #e9ecef; }
+.pano-preview-thumb { position: absolute; inset: 0; width: 100%; height: 100%; padding: 0; border: 0; background: none; cursor: pointer; }
+.pano-preview-thumb:disabled { cursor: default; }
+.pano-preview-thumb canvas { display: block; width: 100%; height: 100%; }
+.pano-preview-empty { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: #666; font-size: 13px; }
+.pano-preview-nav { position: absolute; top: 50%; transform: translateY(-50%); z-index: 1; width: 28px; height: 28px; padding: 0; border: 0; border-radius: 50%; background: rgba(0, 0, 0, 0.45); color: #fff; font-size: 18px; line-height: 1; cursor: pointer; }
+.pano-preview-nav[data-pano="prev"] { left: 6px; }
+.pano-preview-nav[data-pano="next"] { right: 6px; }
+.pano-preview-nav:disabled { opacity: 0.3; cursor: default; }
+.pano-preview-tag { position: absolute; left: 8px; bottom: 8px; padding: 3px 9px; border-radius: 999px; background: rgba(0, 0, 0, 0.6); color: #fff; font-size: 11px; pointer-events: none; }
+body.navigation-mode .pano-preview-slot { display: none; }

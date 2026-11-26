@@ -29,6 +29,7 @@
     overlayOpen: false,
   };
   var imageCache = new Map(); // url -> Promise<HTMLImageElement>
+  var preview = { root: null }; // 경로 시트 맨 위 파노라마 미리보기
 
   var viewer = {
     renderer: null,
@@ -176,10 +177,19 @@
     els.prevBtn.disabled = state.step <= 0;
     els.nextBtn.disabled = state.step >= total - 1;
 
+    var pv = previewRefs();
+    if (pv) {
+      pv.tag.textContent = state.step + 1 + " / " + total + " · " + arrowFor(bearing) + " " + labelFor(bearing) + "쪽";
+      pv.prev.disabled = state.step <= 0;
+      pv.next.disabled = state.step >= total - 1;
+    }
+
     if (!pair.from.panorama_url) {
       showEmpty("사진 없음");
+      setPreview(previewRefs(), "사진 없음");
     } else {
       showLoading();
+      setPreview(previewRefs(), "불러오는 중...");
       loadPanorama(pair.from.panorama_url).then(
         function (img) {
           if (token !== state.renderToken) return;
@@ -187,15 +197,113 @@
           els.cutCanvas.hidden = false;
           els.empty.hidden = true;
           els.thumbBtn.disabled = false;
+          setPreview(previewRefs(), "", img, bearing);
         },
         function () {
           if (token !== state.renderToken) return;
           showEmpty("사진을 불러올 수 없습니다");
+          setPreview(previewRefs(), "사진을 불러올 수 없습니다");
         }
       );
     }
 
     if (state.overlayOpen) showViewer();
+  }
+
+  /* ---------- 경로 시트 미리보기 (안내 시작 전) ---------- */
+
+  function previewMarkup() {
+    return (
+      '<div class="pano-preview">' +
+      '<button class="pano-preview-thumb" type="button" data-pano="open" aria-label="파노라마 전체화면으로 보기" disabled>' +
+      '<canvas width="640" height="224" hidden></canvas>' +
+      '<span class="pano-preview-empty">불러오는 중...</span>' +
+      "</button>" +
+      '<button class="pano-preview-nav" type="button" data-pano="prev" aria-label="이전 지점">‹</button>' +
+      '<button class="pano-preview-nav" type="button" data-pano="next" aria-label="다음 지점">›</button>' +
+      '<span class="pano-preview-tag"></span>' +
+      "</div>"
+    );
+  }
+
+  function previewRefs() {
+    var root = preview.root;
+    if (!root || !document.body.contains(root)) return null;
+    return {
+      canvas: root.querySelector("canvas"),
+      empty: root.querySelector(".pano-preview-empty"),
+      tag: root.querySelector(".pano-preview-tag"),
+      prev: root.querySelector('[data-pano="prev"]'),
+      next: root.querySelector('[data-pano="next"]'),
+      thumb: root.querySelector('[data-pano="open"]'),
+    };
+  }
+
+  function setPreview(pv, message, img, bearing) {
+    if (!pv) return;
+    if (img) {
+      drawDirectionCut(pv.canvas, img, bearing);
+      pv.canvas.hidden = false;
+      pv.empty.hidden = true;
+      pv.thumb.disabled = false;
+    } else {
+      pv.canvas.hidden = true;
+      pv.empty.hidden = false;
+      pv.empty.textContent = message;
+      pv.thumb.disabled = true;
+    }
+  }
+
+  function hidePreview() {
+    var slot = document.querySelector(".pano-preview-slot");
+    if (slot) slot.hidden = true;
+    preview.root = null;
+  }
+
+  // 경로 시트 맨 위(.pano-preview-slot)에 파노라마 미리보기를 붙인다.
+  // 경로 지점 중 사진이 하나도 없으면 칸을 숨긴다.
+  function attachPreview(route) {
+    var slot = document.querySelector(".pano-preview-slot");
+    preview.root = null;
+    if (!slot) return;
+    if (state.active) {
+      slot.hidden = true;
+      return;
+    }
+
+    var path = buildPath(route);
+    var hasPhoto = path.some(function (node) { return node.panorama_url; });
+    if (path.length < 2 || !hasPhoto) {
+      slot.hidden = true;
+      slot.innerHTML = "";
+      return;
+    }
+
+    var key = pathKeyOf(path);
+    if (key !== state.pathKey) {
+      state.path = path;
+      state.pathKey = key;
+      state.step = 0;
+      for (var i = 0; i < path.length - 1; i += 1) {
+        if (path[i].panorama_url) {
+          state.step = i; // 사진이 있는 첫 지점부터 보여준다
+          break;
+        }
+      }
+    }
+
+    slot.innerHTML = previewMarkup();
+    slot.hidden = false;
+    preview.root = slot;
+    slot.onclick = function (event) {
+      var button = event.target.closest("[data-pano]");
+      if (!button || button.disabled) return;
+      var action = button.getAttribute("data-pano");
+      if (action === "prev") goToStep(state.step - 1, true);
+      else if (action === "next") goToStep(state.step + 1, true);
+      else if (action === "open") openViewer();
+    };
+    render();
   }
 
   function showEmpty(message) {
@@ -241,6 +349,7 @@
   function start(route) {
     if (!els.panel) return;
     state.active = true;
+    hidePreview();
     state.manualUntil = 0;
     state.pathKey = "";
     if (route) setPath(route);
@@ -291,6 +400,7 @@
 
   function stop() {
     state.active = false;
+    preview.root = null;
     state.path = [];
     state.pathKey = "";
     state.step = 0;
@@ -523,7 +633,7 @@
     document.getElementById("panoViewerClose").addEventListener("click", closeViewer);
   }
 
-  window.PanoGuide = { start: start, update: update, stop: stop };
+  window.PanoGuide = { start: start, update: update, stop: stop, attachPreview: attachPreview };
 
   if (document.readyState === "loading") {
     document.addEventListener("DOMContentLoaded", init);
