@@ -32,6 +32,7 @@ let currentRouteData = null;
 let selectedPlaceForRoute = null;
 let activeNearbyFilterKeyword = "";
 let currentInlineReportTarget = null;
+let agentReportPending = false; // 챗봇이 연 제보 패널일 때만 접수 완료 안내를 챗봇에 남긴다.
 
 // false 일 땐 지도만 보는 중, true 일 땐 실제 길안내 중
 let navigationMode = false;
@@ -1652,6 +1653,7 @@ async function submitInlineReport() {
     }
 
     alert("제보가 등록되었습니다. 관리자가 확인하면 장소 정보에 반영됩니다.");
+    notifyAgentReportSubmitted();
     dismissActiveCaption({ removeCurrentLocation: false });
   } catch (error) {
     alert(error.message);
@@ -2727,6 +2729,7 @@ function dismissActiveCaption({
   }
 
   currentInlineReportTarget = null;
+  agentReportPending = false;
   if (!preserveRouteSelection) selectedPlaceForRoute = null;
   infoPanelState = "route";
   resetPlaceSheet();
@@ -4204,22 +4207,16 @@ agentForm?.addEventListener("submit", async (event) => {
 function renderAgentPayload(answerNode, payload) {
   if (payload.intent === "REPORT") {
     renderAgentReportAction(answerNode, payload.report || {});
-    openAgentReportSheet(payload.report || {});
+    openAgentReportPanel(payload.report || {});
     return;
   }
   if (payload.intent === "ROUTE" && Array.isArray(payload.routes) && payload.routes.length) {
     renderAgentRouteActions(answerNode, payload);
   } else if (payload.intent === "ROUTE") {
     appendAgentMessage("경로 데이터가 반환되지 않았습니다. 출발지와 목적지 이름을 더 정확하게 알려주세요.", "error");
-  } else if (Array.isArray(payload.items) && payload.items.length) {
-    if (payload.intent === "PHOTO") {
-      renderAgentPhotoGallery(payload.items);
-    } else {
-      appendAgentMessage(payload.items.slice(0, 6).map((item) => {
-        const where = [item.floor, item.description].filter(Boolean).join(" · ");
-        return `• ${item.name}${where ? " — " + where : ""}`;
-      }).join("\n"), "bot");
-    }
+  } else if (payload.intent === "PHOTO" && Array.isArray(payload.items) && payload.items.length) {
+    // 시설 목록(화장실/엘리베이터 등)은 answer 본문에 이미 들어 있으므로 다시 붙이지 않는다.
+    renderAgentPhotoGallery(payload.items);
   }
 }
 
@@ -4358,78 +4355,46 @@ function typeAgentMessage(node, text) {
   });
 }
 
-// ---------- 불편 구간 제보 바텀시트 ----------
-// 제보 저장은 기존 report.html -> POST /api/accessibility-reports 를 그대로 사용한다.
+// ---------- 불편 구간 제보 (기존 하단 가운데 버튼과 같은 인라인 패널) ----------
+// 새 화면을 따로 만들지 않고 openReportPanelAtCurrentMap()을 그대로 호출한다.
+// 저장도 기존 submitInlineReport() -> POST /api/accessibility-reports 를 그대로 쓴다.
 // (같은 accessibility_reports 테이블에 pending으로 저장되고, 관리자 승인 후 모든 사용자에게 반영된다)
-let agentReportSheet = null;
-
-function ensureAgentReportSheet() {
-  if (agentReportSheet) return agentReportSheet;
-  const sheet = document.createElement("section");
-  sheet.id = "agentReportSheet";
-  sheet.className = "agent-report-sheet hidden";
-  sheet.setAttribute("aria-label", "불편 구간 제보");
-
-  const backdrop = document.createElement("div");
-  backdrop.className = "agent-report-backdrop";
-  backdrop.addEventListener("click", closeAgentReportSheet);
-
-  const dialog = document.createElement("div");
-  dialog.className = "agent-report-dialog";
-  dialog.setAttribute("role", "dialog");
-  dialog.setAttribute("aria-modal", "true");
-  dialog.setAttribute("aria-label", "불편 구간 제보");
-
-  const frame = document.createElement("iframe");
-  frame.className = "agent-report-frame";
-  frame.title = "불편 구간 제보";
-  frame.setAttribute("allow", "geolocation; camera");
-
-  dialog.appendChild(frame);
-  sheet.append(backdrop, dialog);
-  (document.querySelector(".phone") || document.body).appendChild(sheet);
-  agentReportSheet = sheet;
-  return sheet;
-}
-
-// 제보 위치 기본값: 현재 위치 -> 브라우저 위치 -> 지도 중심 순서
-async function resolveAgentReportCoordinates() {
-  if (currentLocationPosition) {
-    return { lat: currentLocationPosition.getLat(), lng: currentLocationPosition.getLng() };
+async function openAgentReportPanel(draft = {}) {
+  // 건물명을 MapService 좌표로 바꿔 제보 위치로 쓴다. 못 찾으면 기존처럼 지도 중심이 기본값이다.
+  let target = null;
+  if (draft.placeName) {
+    const places = await fetchMapServicePlaces(draft.placeName);
+    const hasCoords = (place) => Number.isFinite(Number(place.x)) && Number.isFinite(Number(place.y));
+    const found = places.find((place) => !place.poi_type && hasCoords(place)) || places.find(hasCoords);
+    if (found) {
+      target = { place_name: draft.placeName, address_name: draft.placeName, x: found.x, y: found.y };
+    }
   }
-  if (navigator.geolocation) {
-    const browserPosition = await new Promise((resolve) => navigator.geolocation.getCurrentPosition(
-      (position) => resolve({ lat: position.coords.latitude, lng: position.coords.longitude }),
-      () => resolve(null),
-      { enableHighAccuracy: true, timeout: 5000, maximumAge: 30000 },
-    ));
-    if (browserPosition) return browserPosition;
+
+  setActiveNav(cameraNavBtn);
+  openReportPanelAtCurrentMap(target);
+  if (target) map.setCenter(new kakao.maps.LatLng(Number(target.y), Number(target.x)));
+
+  // 챗봇이 정리한 초안(유형/설명)을 패널에 미리 채운다.
+  const typeChips = [...document.querySelectorAll("#inlineReportTypes .inline-chip")];
+  const presetChip = typeChips.find((chip) => chip.dataset.type === draft.reportType);
+  if (presetChip) {
+    typeChips.forEach((chip) => chip.classList.remove("active"));
+    presetChip.classList.add("active");
   }
-  const center = map.getCenter();
-  return { lat: center.getLat(), lng: center.getLng() };
+  const detailInput = document.getElementById("inlineReportDetail");
+  if (detailInput && draft.detail) detailInput.value = String(draft.detail).slice(0, 500);
+
+  agentReportPending = true;
+  // 좁은 화면에서는 챗봇 패널이 제보 패널을 가리므로 닫는다. 넓은 화면에서는 그대로 둔다.
+  if (window.matchMedia?.("(max-width: 480px)").matches) closeAgentPanel();
 }
 
-async function openAgentReportSheet(draft = {}) {
-  const sheet = ensureAgentReportSheet();
-  const { lat, lng } = await resolveAgentReportCoordinates();
-  const query = new URLSearchParams({
-    embed: "1",
-    x: String(lng),
-    y: String(lat),
-    name: draft.placeName || "",
-    address: draft.placeName || "",
-    type: draft.reportType || "",
-    detail: draft.detail || "",
-  });
-  sheet.querySelector(".agent-report-frame").src = `report.html?${query.toString()}`;
-  sheet.classList.remove("hidden");
-}
-
-function closeAgentReportSheet() {
-  if (!agentReportSheet) return;
-  agentReportSheet.classList.add("hidden");
-  // 닫을 때 iframe을 비워 지도/카메라 자원을 해제한다.
-  agentReportSheet.querySelector(".agent-report-frame").removeAttribute("src");
+// submitInlineReport() 성공 시 호출된다.
+function notifyAgentReportSubmitted() {
+  if (!agentReportPending) return;
+  agentReportPending = false;
+  appendAgentMessage("제보가 접수되었어요. 관리자가 확인해 승인하면 다른 사용자의 경로 안내에도 반영돼요.", "bot");
 }
 
 function renderAgentReportAction(messageNode, draft) {
@@ -4445,25 +4410,12 @@ function renderAgentReportAction(messageNode, draft) {
   openButton.type = "button";
   openButton.className = "agent-route-primary";
   openButton.textContent = "제보 화면 열기";
-  openButton.addEventListener("click", () => openAgentReportSheet(draft));
+  openButton.addEventListener("click", () => openAgentReportPanel(draft));
   actions.appendChild(openButton);
   card.append(title, details, actions);
   messageNode.appendChild(card);
   agentMessages.scrollTop = agentMessages.scrollHeight;
 }
-
-// report.html(iframe)이 보내는 완료/닫기 메시지를 받는다. 같은 출처의 메시지만 믿는다.
-window.addEventListener("message", (event) => {
-  if (event.origin !== window.location.origin) return;
-  const frame = agentReportSheet?.querySelector(".agent-report-frame");
-  if (!frame || event.source !== frame.contentWindow) return;
-  if (event.data?.type === "agent-report:close") {
-    closeAgentReportSheet();
-  } else if (event.data?.type === "agent-report:submitted") {
-    closeAgentReportSheet();
-    appendAgentMessage("제보가 접수되었어요. 관리자가 확인해 승인하면 다른 사용자의 경로 안내에도 반영돼요.", "bot");
-  }
-});
 
 function appendAgentMessage(text, kind = "bot") {
   const node = document.createElement("div");

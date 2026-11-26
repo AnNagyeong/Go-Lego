@@ -381,31 +381,6 @@
       transform: translateX(18px);
     }
 
-    /* 챗봇 바텀시트(iframe) 안에서 열릴 때: 위쪽 지도 + 아래쪽 입력 폼으로 나눈다. */
-    body.embed #reportMap {
-      inset: 0 0 auto 0;
-      height: 36%;
-    }
-
-    body.embed .report-panel {
-      left: 0;
-      right: 0;
-      top: 36%;
-      bottom: 0;
-      width: 100%;
-      max-width: 100%;
-      height: auto;
-      max-height: none;
-      border-radius: 20px 20px 0 0;
-      box-shadow: 0 -6px 18px rgba(0, 0, 0, 0.12);
-    }
-
-    body.embed .bottom-nav,
-    body.embed .map-control-buttons,
-    body.embed .filter-panel {
-      display: none !important;
-    }
-
     @media (max-width: 768px) {
       .report-panel {
         left: 14px;
@@ -431,7 +406,7 @@
 
     <div class="report-panel">
       <div class="report-header">
-        <button class="back-btn" id="reportBackBtn" type="button" aria-label="뒤로">←</button>
+        <button class="back-btn" onclick="history.back()">←</button>
         <div class="report-title">위험 구간 제보</div>
       </div>
 
@@ -562,19 +537,11 @@
   <script>
     const params = new URLSearchParams(location.search);
 
-    // embed=1 : 챗봇 바텀시트(iframe)로 열린 경우. 화면 이동 대신 부모 창에 메시지를 보낸다.
-    const isEmbed = params.get("embed") === "1" && window.parent !== window;
-    if (isEmbed) document.body.classList.add("embed");
-
-    function notifyParent(type, payload = {}) {
-      if (isEmbed) window.parent.postMessage({ type, ...payload }, location.origin);
-    }
-
     const hasSelectedPlace = params.has("x") && params.has("y");
-    let placeName = params.get("name") || "";
+    const placeName = params.get("name") || "";
     const address = params.get("address") || "";
-    let x = Number(params.get("x")) || 127.03811;
-    let y = Number(params.get("y")) || 37.56184;
+    const x = Number(params.get("x")) || 127.03811;
+    const y = Number(params.get("y")) || 37.56184;
 
     const reportLocation = document.getElementById("reportLocation");
     const slopeRange = document.getElementById("slopeRange");
@@ -585,27 +552,6 @@
     const submitReportBtn = document.getElementById("submitReportBtn");
 
     reportLocation.value = address;
-
-    // 챗봇이 넘겨준 제보 초안(유형/설명)을 폼에 미리 채운다.
-    const presetType = params.get("type");
-    if (presetType) {
-      const presetChip = [...typeChips].find((chip) => chip.dataset.type === presetType);
-      if (presetChip) {
-        typeChips.forEach((chip) => chip.classList.remove("active"));
-        presetChip.classList.add("active");
-      }
-    }
-    const presetDetail = params.get("detail");
-    if (presetDetail) document.getElementById("reportDetail").value = presetDetail.slice(0, 500);
-
-    document.getElementById("reportBackBtn").addEventListener("click", () => {
-      if (isEmbed) {
-        notifyParent("agent-report:close");
-      } else {
-        history.back();
-      }
-    });
-    if (isEmbed) document.getElementById("reportBackBtn").textContent = "×";
 
     slopeRange.addEventListener("input", () => {
       slopeValue.textContent = `${slopeRange.value}%`;
@@ -654,37 +600,6 @@
       }
     } else {
       moveReportMapToCurrentLocation();
-    }
-
-    // 좌표 -> 주소 (위치 칸이 비어 있거나 핀을 옮겼을 때 채운다)
-    function fillAddressFromCoords(lng, lat) {
-      try {
-        new kakao.maps.services.Geocoder().coord2Address(lng, lat, (result, status) => {
-          if (status !== kakao.maps.services.Status.OK || !result[0]) return;
-          reportLocation.value =
-            result[0].road_address?.address_name || result[0].address?.address_name || reportLocation.value;
-        });
-      } catch (error) {
-        console.warn("주소 변환 실패:", error);
-      }
-    }
-
-    if (isEmbed) {
-      if (!address && hasSelectedPlace) fillAddressFromCoords(x, y);
-
-      // 지도를 누르면 제보 위치(핀)를 옮길 수 있다.
-      kakao.maps.event.addListener(map, "click", (mouseEvent) => {
-        const latlng = mouseEvent.latLng;
-        x = latlng.getLng();
-        y = latlng.getLat();
-        placeName = ""; // 핀을 옮기면 처음 장소명은 더 이상 맞지 않는다.
-        if (marker) {
-          marker.setPosition(latlng);
-        } else {
-          marker = new kakao.maps.Marker({ map, position: latlng });
-        }
-        fillAddressFromCoords(x, y);
-      });
     }
 
     document.getElementById("reportFavoriteBtn").addEventListener("click", () => {
@@ -802,11 +717,6 @@
 
         if (!response.ok || !data.ok) {
           throw new Error(data.error || "제보 등록에 실패했습니다.");
-        }
-
-        if (isEmbed) {
-          notifyParent("agent-report:submitted", { id: data.report?.id || null });
-          return;
         }
 
         alert("제보가 등록되었습니다. 관리자가 확인하면 장소 정보에 반영됩니다.");
