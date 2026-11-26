@@ -1747,6 +1747,67 @@ app.post("/api/agent/chat", async (req, res) => {
   }
 });
 
+// Agent의 SSE 스트림(/api/agent/chat/stream)을 브라우저로 그대로 중계한다.
+// 단계(step) 이벤트가 모이지 않고 즉시 전달되도록 응답을 버퍼링하지 않는다.
+app.post("/api/agent/chat/stream", async (req, res) => {
+  const message = String(req.body?.message || "").trim();
+  const mobilityType = normalizeMobilityType(req.body?.mobilityType);
+  if (!message) return res.status(400).json({ ok: false, error: "질문을 입력해주세요." });
+  if (message.length > 200) return res.status(400).json({ ok: false, error: "질문은 200자 이내여야 합니다." });
+
+  const agentBaseUrl = String(process.env.AGENT_BASE_URL || "http://127.0.0.1:8000").replace(/\/+$/, "");
+  const controller = new AbortController();
+  const timeoutTimer = setTimeout(() => controller.abort(), 60000);
+  // 사용자가 창을 닫거나 새로고침하면 Agent로 가는 요청도 함께 끊는다.
+  res.on("close", () => controller.abort());
+
+  try {
+    const upstream = await fetch(`${agentBaseUrl}/api/agent/chat/stream`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        message,
+        mobilityType,
+        ...(Number.isFinite(Number(req.body?.currentLatitude)) ? { currentLatitude: Number(req.body.currentLatitude) } : {}),
+        ...(Number.isFinite(Number(req.body?.currentLongitude)) ? { currentLongitude: Number(req.body.currentLongitude) } : {}),
+      }),
+      signal: controller.signal,
+    });
+
+    if (!upstream.ok || !upstream.body) {
+      const payload = await upstream.json().catch(() => ({}));
+      return res.status(upstream.status || 502).json({
+        ok: false,
+        error: payload.detail || payload.error || "Agent 응답을 가져오지 못했습니다.",
+      });
+    }
+
+    res.status(200).set({
+      "Content-Type": "text/event-stream; charset=utf-8",
+      "Cache-Control": "no-cache, no-transform",
+      Connection: "keep-alive",
+      "X-Accel-Buffering": "no",
+    });
+    res.flushHeaders?.();
+
+    for await (const chunk of upstream.body) {
+      res.write(chunk);
+    }
+    return res.end();
+  } catch (error) {
+    // 클라이언트가 먼저 끊은 경우에는 더 보낼 것이 없다.
+    if (res.writableEnded || res.destroyed) return undefined;
+    console.error("Agent stream bridge error:", error.message);
+    if (!res.headersSent) {
+      return res.status(503).json({ ok: false, error: "AI Agent에 연결할 수 없습니다. Agent 서버가 실행 중인지 확인해주세요." });
+    }
+    res.write(`event: error\ndata: ${JSON.stringify({ message: "Agent 연결이 중간에 끊겼습니다." })}\n\n`);
+    return res.end();
+  } finally {
+    clearTimeout(timeoutTimer);
+  }
+});
+
 app.get("/api/access-routes", handleAccessRoutes);
 app.get("/api/access-places", handleAccessPlaces);
 app.get("/api/place-photo", handlePlacePhoto);

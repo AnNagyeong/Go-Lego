@@ -3509,3 +3509,12 @@ body.route-planner-mode .route-endpoint-summary { display: none; }
 .pano-preview-nav:disabled { opacity: 0.3; cursor: default; }
 .pano-preview-tag { position: absolute; left: 8px; bottom: 8px; padding: 3px 9px; border-radius: 999px; background: rgba(0, 0, 0, 0.6); color: #fff; font-size: 11px; pointer-events: none; }
 body.navigation-mode .pano-preview-slot { display: none; }
+/* ===== Agent: 생각하는 중 표시 ===== */
+.agent-thinking { min-width:190px; }
+.agent-thinking-steps { display:flex; flex-direction:column; gap:6px; margin:0; padding:0; list-style:none; }
+.agent-thinking-steps li { color:#8a9199; font-size:12px; line-height:1.4; }
+.agent-thinking-steps li.done::before { content:"\2713\00a0"; color:#36a400; }
+.agent-thinking-steps li.active { color:#2b2f33; font-weight:700; }
+.agent-thinking-steps li.active::after { content:""; display:inline-block; width:6px; height:6px; margin-left:7px; border-radius:50%; background:#36d400; vertical-align:middle; animation:agentThinkingPulse 1s ease-in-out infinite; }
+@keyframes agentThinkingPulse { 0%,100% { opacity:.25; transform:scale(.8); } 50% { opacity:1; transform:scale(1.15); } }
+@media (prefers-reduced-motion:reduce) { .agent-thinking-steps li.active::after { animation:none; } }

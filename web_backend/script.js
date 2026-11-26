@@ -32,6 +32,7 @@ let currentRouteData = null;
 let selectedPlaceForRoute = null;
 let activeNearbyFilterKeyword = "";
 let currentInlineReportTarget = null;
+let agentReportPending = false; // 챗봇이 연 제보 패널일 때만 접수 완료 안내를 챗봇에 남긴다.
 
 // false 일 땐 지도만 보는 중, true 일 땐 실제 길안내 중
 let navigationMode = false;
@@ -1652,6 +1653,7 @@ async function submitInlineReport() {
     }
 
     alert("제보가 등록되었습니다. 관리자가 확인하면 장소 정보에 반영됩니다.");
+    notifyAgentReportSubmitted();
     dismissActiveCaption({ removeCurrentLocation: false });
   } catch (error) {
     alert(error.message);
@@ -2729,6 +2731,7 @@ function dismissActiveCaption({
   }
 
   currentInlineReportTarget = null;
+  agentReportPending = false;
   if (!preserveRouteSelection) selectedPlaceForRoute = null;
   infoPanelState = "route";
   resetPlaceSheet();
@@ -4176,44 +4179,246 @@ agentForm?.addEventListener("submit", async (event) => {
   appendAgentMessage(message, "user");
   agentInput.value = "";
   agentSendBtn.disabled = true;
-  const pending = appendAgentMessage("질문을 확인하고 있습니다…", "bot");
+  const thinking = createAgentThinkingBubble();
+  thinking.addStep("질문을 확인하고 있어요");
   try {
     const locationInfo = await getAgentCurrentLocationIfNeeded(message);
-    const response = await fetch("/api/agent/chat", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ message, mobilityType: agentMobilityType?.value || selectedMobilityType, ...(locationInfo || {}) }),
-    });
-    const payload = await response.json().catch(() => ({}));
-    pending.remove();
-    if (!response.ok || payload.ok === false) {
-      appendAgentMessage(payload.error || payload.detail || "Agent 요청을 처리하지 못했습니다.", "error");
-      return;
-    }
-    const answer = appendAgentMessage(payload.answer || "요청을 처리했습니다.", "bot");
-    if (payload.intent === "ROUTE" && Array.isArray(payload.routes) && payload.routes.length) {
-      renderAgentRouteActions(answer, payload);
-    } else if (payload.intent === "ROUTE") {
-      appendAgentMessage("경로 데이터가 반환되지 않았습니다. 출발지와 목적지 이름을 더 정확하게 알려주세요.", "error");
-    } else if (Array.isArray(payload.items) && payload.items.length) {
-      if (payload.intent === "PHOTO") {
-        renderAgentPhotoGallery(payload.items);
-      } else {
-        appendAgentMessage(payload.items.slice(0, 6).map((item) => {
-          const where = [item.floor, item.description].filter(Boolean).join(" · ");
-          return `• ${item.name}${where ? " — " + where : ""}`;
-        }).join("\\n"), "bot");
-      }
-    }
+    const payload = await requestAgentAnswer(
+      { message, mobilityType: agentMobilityType?.value || selectedMobilityType, ...(locationInfo || {}) },
+      (step) => thinking.addStep(step.label),
+    );
+    thinking.remove();
+    // 답변이 한 번에 나타나지 않고, 말하듯이 한 글자씩 이어서 출력된다.
+    const answer = appendAgentMessage("", "bot");
+    await typeAgentMessage(answer, payload.answer || "요청을 처리했습니다.");
+    renderAgentPayload(answer, payload);
   } catch (error) {
-    pending.remove();
-    appendAgentMessage("Agent 서버에 연결하지 못했습니다. Go-Lego 서버와 Python Agent 서버가 실행 중인지 확인해주세요.", "error");
+    thinking.remove();
+    if (error?.userFacing) {
+      appendAgentMessage(error.message, "error");
+    } else {
+      appendAgentMessage("Agent 서버에 연결하지 못했습니다. Go-Lego 서버와 Python Agent 서버가 실행 중인지 확인해주세요.", "error");
+    }
     console.error("Agent chat failed:", error);
   } finally {
     agentSendBtn.disabled = false;
     agentInput?.focus();
   }
 });
+
+// 응답 종류(경로/사진/시설/제보)에 따라 답변 말풍선 아래에 추가 UI를 붙인다.
+function renderAgentPayload(answerNode, payload) {
+  if (payload.intent === "REPORT") {
+    renderAgentReportAction(answerNode, payload.report || {});
+    openAgentReportPanel(payload.report || {});
+    return;
+  }
+  if (payload.intent === "ROUTE" && Array.isArray(payload.routes) && payload.routes.length) {
+    renderAgentRouteActions(answerNode, payload);
+  } else if (payload.intent === "ROUTE") {
+    appendAgentMessage("경로 데이터가 반환되지 않았습니다. 출발지와 목적지 이름을 더 정확하게 알려주세요.", "error");
+  } else if (payload.intent === "PHOTO" && Array.isArray(payload.items) && payload.items.length) {
+    // 시설 목록(화장실/엘리베이터 등)은 answer 본문에 이미 들어 있으므로 다시 붙이지 않는다.
+    renderAgentPhotoGallery(payload.items);
+  }
+}
+
+// ---------- "생각하는 중" 표시 + 스트리밍 ----------
+
+// 단계(step) 이벤트가 올 때마다 줄이 쌓이고, 지난 단계는 흐리게, 현재 단계는 강조된다.
+function createAgentThinkingBubble() {
+  const node = document.createElement("div");
+  node.className = "agent-message agent-message-bot agent-thinking";
+  node.setAttribute("role", "status");
+  const list = document.createElement("ul");
+  list.className = "agent-thinking-steps";
+  node.appendChild(list);
+  agentMessages.appendChild(node);
+  agentMessages.scrollTop = agentMessages.scrollHeight;
+  return {
+    addStep(label) {
+      if (!label) return;
+      list.querySelector("li.active")?.classList.replace("active", "done");
+      const item = document.createElement("li");
+      item.className = "active";
+      item.textContent = label;
+      list.appendChild(item);
+      agentMessages.scrollTop = agentMessages.scrollHeight;
+    },
+    remove() {
+      node.remove();
+    },
+  };
+}
+
+// SSE(event/data) 한 덩어리를 {event, data}로 해석한다.
+function parseAgentSseBlock(block) {
+  let event = "message";
+  const dataLines = [];
+  block.split("\n").forEach((line) => {
+    if (line.startsWith("event:")) event = line.slice(6).trim();
+    else if (line.startsWith("data:")) dataLines.push(line.slice(5).trimStart());
+  });
+  if (!dataLines.length) return null;
+  try {
+    return { event, data: JSON.parse(dataLines.join("\n")) };
+  } catch {
+    return null;
+  }
+}
+
+async function streamAgentChat(body, onStep) {
+  const response = await fetch("/api/agent/chat/stream", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!response.ok || !response.body) {
+    const errorBody = await response.json().catch(() => ({}));
+    const error = new Error(errorBody.error || errorBody.detail || "Agent 요청을 처리하지 못했습니다.");
+    error.userFacing = true;
+    error.status = response.status;
+    throw error;
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder("utf-8");
+  let buffer = "";
+  let result = null;
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true }).replace(/\r\n/g, "\n");
+    let boundary = buffer.indexOf("\n\n");
+    while (boundary !== -1) {
+      const parsed = parseAgentSseBlock(buffer.slice(0, boundary));
+      buffer = buffer.slice(boundary + 2);
+      boundary = buffer.indexOf("\n\n");
+      if (!parsed) continue;
+      if (parsed.event === "step") {
+        onStep?.(parsed.data);
+      } else if (parsed.event === "result") {
+        result = parsed.data;
+      } else if (parsed.event === "error") {
+        const error = new Error(parsed.data?.message || "Agent 요청을 처리하지 못했습니다.");
+        error.userFacing = true;
+        throw error;
+      }
+    }
+  }
+  if (!result) {
+    const error = new Error("응답이 중간에 끊겼습니다. 다시 시도해 주세요.");
+    error.userFacing = true;
+    throw error;
+  }
+  return result;
+}
+
+// 스트리밍 엔드포인트를 먼저 쓰고, 서버가 아직 업데이트되지 않아 404면 기존 한 번에 응답 방식으로 대체한다.
+async function requestAgentAnswer(body, onStep) {
+  try {
+    return await streamAgentChat(body, onStep);
+  } catch (error) {
+    if (error?.status !== 404) throw error;
+  }
+  const response = await fetch("/api/agent/chat", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok || payload.ok === false) {
+    const error = new Error(payload.error || payload.detail || "Agent 요청을 처리하지 못했습니다.");
+    error.userFacing = true;
+    throw error;
+  }
+  return payload;
+}
+
+// 말하듯 한 글자씩 출력한다. 긴 답변은 한 번에 여러 글자씩 찍어 총 4초를 넘기지 않게 한다.
+function typeAgentMessage(node, text) {
+  const reduceMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+  if (reduceMotion || !text) {
+    node.textContent = text;
+    agentMessages.scrollTop = agentMessages.scrollHeight;
+    return Promise.resolve();
+  }
+  return new Promise((resolve) => {
+    const chunkSize = Math.max(1, Math.ceil(text.length / 220));
+    let index = 0;
+    const timer = setInterval(() => {
+      index = Math.min(text.length, index + chunkSize);
+      node.textContent = text.slice(0, index);
+      agentMessages.scrollTop = agentMessages.scrollHeight;
+      if (index >= text.length) {
+        clearInterval(timer);
+        resolve();
+      }
+    }, 18);
+  });
+}
+
+// ---------- 불편 구간 제보 (기존 하단 가운데 버튼과 같은 인라인 패널) ----------
+// 새 화면을 따로 만들지 않고 openReportPanelAtCurrentMap()을 그대로 호출한다.
+// 저장도 기존 submitInlineReport() -> POST /api/accessibility-reports 를 그대로 쓴다.
+// (같은 accessibility_reports 테이블에 pending으로 저장되고, 관리자 승인 후 모든 사용자에게 반영된다)
+async function openAgentReportPanel(draft = {}) {
+  // 건물명을 MapService 좌표로 바꿔 제보 위치로 쓴다. 못 찾으면 기존처럼 지도 중심이 기본값이다.
+  let target = null;
+  if (draft.placeName) {
+    const places = await fetchMapServicePlaces(draft.placeName);
+    const hasCoords = (place) => Number.isFinite(Number(place.x)) && Number.isFinite(Number(place.y));
+    const found = places.find((place) => !place.poi_type && hasCoords(place)) || places.find(hasCoords);
+    if (found) {
+      target = { place_name: draft.placeName, address_name: draft.placeName, x: found.x, y: found.y };
+    }
+  }
+
+  setActiveNav(cameraNavBtn);
+  openReportPanelAtCurrentMap(target);
+  if (target) map.setCenter(new kakao.maps.LatLng(Number(target.y), Number(target.x)));
+
+  // 챗봇이 정리한 초안(유형/설명)을 패널에 미리 채운다.
+  const typeChips = [...document.querySelectorAll("#inlineReportTypes .inline-chip")];
+  const presetChip = typeChips.find((chip) => chip.dataset.type === draft.reportType);
+  if (presetChip) {
+    typeChips.forEach((chip) => chip.classList.remove("active"));
+    presetChip.classList.add("active");
+  }
+  const detailInput = document.getElementById("inlineReportDetail");
+  if (detailInput && draft.detail) detailInput.value = String(draft.detail).slice(0, 500);
+
+  agentReportPending = true;
+  // 좁은 화면에서는 챗봇 패널이 제보 패널을 가리므로 닫는다. 넓은 화면에서는 그대로 둔다.
+  if (window.matchMedia?.("(max-width: 480px)").matches) closeAgentPanel();
+}
+
+// submitInlineReport() 성공 시 호출된다.
+function notifyAgentReportSubmitted() {
+  if (!agentReportPending) return;
+  agentReportPending = false;
+  appendAgentMessage("제보가 접수되었어요. 관리자가 확인해 승인하면 다른 사용자의 경로 안내에도 반영돼요.", "bot");
+}
+
+function renderAgentReportAction(messageNode, draft) {
+  const card = document.createElement("div");
+  card.className = "agent-route-card";
+  const title = document.createElement("strong");
+  title.textContent = "불편 구간 제보";
+  const details = document.createElement("small");
+  details.textContent = [draft.placeName, draft.reportType].filter(Boolean).join(" · ") || "위치와 내용을 직접 입력해 주세요";
+  const actions = document.createElement("div");
+  actions.className = "agent-route-actions";
+  const openButton = document.createElement("button");
+  openButton.type = "button";
+  openButton.className = "agent-route-primary";
+  openButton.textContent = "제보 화면 열기";
+  openButton.addEventListener("click", () => openAgentReportPanel(draft));
+  actions.appendChild(openButton);
+  card.append(title, details, actions);
+  messageNode.appendChild(card);
+  agentMessages.scrollTop = agentMessages.scrollHeight;
+}
 
 function appendAgentMessage(text, kind = "bot") {
   const node = document.createElement("div");
