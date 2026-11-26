@@ -759,7 +759,7 @@ async function fetchWalkingRouteFromORS(origin, destination, { avoidZones = [] }
   }
 
   const response = await fetch(
-    "https://api.openrouteservice.org/v2/directions/foot-walking/geojson",
+    "https://api.heigit.org/openrouteservice/v2/directions/foot-walking/geojson",
     {
       method: "POST",
       headers: {
@@ -1462,6 +1462,8 @@ async function handleCreateAccessibilityReport(req, res) {
 
 // ================= 위험 구간(승인된 제보) 계산 =================
 // 사용자가 제보하고 관리자가 승인한 accessibility_reports 를 위험 구역으로 사용한다.
+// .env 에 DANGER_ROUTING=off 를 넣으면 승인된 제보를 경로 탐색(우회)에는 쓰지 않고 표시만 한다.
+const DANGER_ROUTING_ENABLED = process.env.DANGER_ROUTING !== "off";
 const DANGER_ZONE_RADIUS_M = 20; // 위험 구역 반경
 const DANGER_ZONE_MERGE_M = 15; // 이 거리 안의 제보는 같은 구역으로 합친다
 const STAIR_DANGER_RADIUS_M = 10; // 계단 노드 주변을 위험으로 칠하는 반경
@@ -1501,15 +1503,18 @@ function normalizeDangerZones(rows) {
     const lng = Number(rawLng);
     if (!Number.isFinite(lat) || !Number.isFinite(lng)) return;
 
+    const type = String(row.type || "").trim();
+    const detail = String(row.detail || "").trim();
+
     const sameSpot = zones.find(
       (zone) => getDistance(zone.lat, zone.lng, lat, lng) <= DANGER_ZONE_MERGE_M
     );
     if (sameSpot) {
       sameSpot.reportCount += 1;
+      sameSpot.reasons.push({ type, detail });
       return;
     }
 
-    const type = String(row.type || "").trim();
     zones.push({
       id: String(row.id ?? `${lat},${lng}`),
       name: row.place_name || row.placeName || "위험 구간",
@@ -1518,6 +1523,8 @@ function normalizeDangerZones(rows) {
       lng,
       radius: DANGER_ZONE_RADIUS_M,
       reportCount: 1,
+      // 지도에서 "왜 위험한지" 보여주기 위한 제보 내용
+      reasons: [{ type, detail }],
       // 경로 탐색에서 이 구역을 지나는 간선에 더하는 가중치(미터 환산)
       penalty: type === "공사 통제" ? 400 : 150,
     });
@@ -1610,6 +1617,7 @@ function buildDangerSpots(hitZones, stairNodes) {
     lng: zone.lng,
     radius: zone.radius,
     reportCount: zone.reportCount,
+    reasons: zone.reasons,
   }));
 
   // 같은 계단의 위/아래 노드가 둘로 세어지지 않도록 8m 안은 한 곳으로 합친다.
@@ -1625,6 +1633,7 @@ function buildDangerSpots(hitZones, stairNodes) {
       lat: node.lat,
       lng: node.lng,
       radius: 13,
+      reasons: [{ type: "계단", detail: "계단이 있어 휠체어·유모차 이동이 어렵습니다." }],
     });
   });
 
@@ -1876,7 +1885,7 @@ async function handleAccessRoutes(req, res) {
       startTarget,
       destinationTarget,
       graphData,
-      { mobilityType, optimize: "accessible", dangerZones }
+      { mobilityType, optimize: "accessible", dangerZones: DANGER_ROUTING_ENABLED ? dangerZones : [] }
     );
 
     const routes = [
@@ -1907,6 +1916,27 @@ async function handleAccessRoutes(req, res) {
     }
 
     routes.forEach((route) => finalizeRoute(route, dangerZones));
+
+    // 위험 제보 때문에 추천 경로가 달라졌는지 확인한다: 제보를 무시했을 때 지나가는 구역 중 피한 것을 기록
+    const accessibleRoute = routes.find((route) => route.id === "accessible");
+    if (accessibleRoute && dangerZones.length && DANGER_ROUTING_ENABLED) {
+      const plain = formatAccessRoute(
+        "plain",
+        "plain",
+        findTargetPath(startTarget, destinationTarget, graphData, { mobilityType, optimize: "accessible" }),
+        graphData
+      );
+      const plainHits = plain ? findDangerZonesOnRoute(plain.path, dangerZones) : [];
+      accessibleRoute.avoidedZones = plainHits
+        .filter((zone) => !accessibleRoute.dangerZones.some((hit) => hit.id === zone.id))
+        .map((zone) => ({ id: zone.id, name: zone.name, type: zone.type }));
+    }
+    console.log(
+      `[access-routes] ${mobilityType} 승인된 위험 구역 ${dangerZones.length}곳` +
+        routes
+          .map((route) => ` | ${route.id}: ${route.distance}m, 위험 ${route.dangerCount}곳, 우회 ${route.avoidedZones?.length || 0}곳`)
+          .join("")
+    );
 
     res.json({
       ok: true,

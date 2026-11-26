@@ -2057,14 +2057,7 @@ async function loadApprovedAccessibilityReports() {
         map,
         position,
         title: `${report.placeName || "위험 구간"} (검증된 제보)`,
-        image: new kakao.maps.MarkerImage(
-          "data:image/svg+xml;charset=UTF-8," +
-            encodeURIComponent(
-              '<svg xmlns="http://www.w3.org/2000/svg" width="32" height="38" viewBox="0 0 32 38"><path d="M16 0C7.2 0 0 7.2 0 16c0 11 16 22 16 22s16-11 16-22C32 7.2 24.8 0 16 0z" fill="#ef4444"/><text x="16" y="21" font-size="16" text-anchor="middle" fill="white" font-family="sans-serif">!</text></svg>'
-            ),
-          new kakao.maps.Size(32, 38),
-          { offset: new kakao.maps.Point(16, 38) }
-        ),
+        image: dangerTriangleImage(),
       });
 
       kakao.maps.event.addListener(marker, "click", () => {
@@ -2259,9 +2252,7 @@ function showPlaceSelectionPanel(place) {
       </div>
       <p class="muted">${escapeHTML(place.road_address_name || place.address_name || "\uC8FC\uC18C \uC815\uBCF4 \uC5C6\uC74C")}</p>
 
-      <div class="route-endpoint-summary">
-        ${routeEndpointSummary()}
-      </div>
+      ${endpointSummaryBlock("route-endpoint-summary")}
 
       <div class="place-select-actions">
         <button class="secondary-btn" type="button" data-route-role="start">&#52636;&#48156;&#51648;&#47196;</button>
@@ -2318,6 +2309,13 @@ function focusMissingRouteEndpoint() {
     activeQuickRouteRole = startPlace ? "end" : "start";
     input?.focus();
   }, 120);
+}
+
+// 위쪽 출발/도착 입력창이 이미 보이면 시트에서는 같은 정보를 다시 보여주지 않는다.
+function endpointSummaryBlock(className) {
+  const panel = document.querySelector(".quick-route-panel");
+  if (panel && getComputedStyle(panel).display !== "none") return "";
+  return `<div class="${className}">${routeEndpointSummary()}</div>`;
 }
 
 function routeEndpointSummary() {
@@ -2578,6 +2576,7 @@ function updateSelectedRouteSheet(route) {
   renderRoutePanel(
     `${endPlace.place_name}까지 ${routeLabel}`,
     `위험 구간 ${Number.isFinite(dangerCount) ? dangerCount : 0}곳 · ` +
+      (route.avoidedZones?.length ? `위험 구역 ${route.avoidedZones.length}곳 우회 · ` : "") +
       `계단 ${Number(route.features?.stairs || 0)}개 · 경사로 ${Number(route.features?.ramps || 0)}개 · ` +
       `엘리베이터 ${Number(route.features?.elevators || 0)}개 · 횡단보도 ${Number(route.features?.crosswalks || 0)}개`
   );
@@ -3542,9 +3541,7 @@ function renderRoutePanel(title, subtitle = "") {
     <h3 id="placeName">${escapeHTML(title)}</h3>
     <p id="placeAddress" class="muted">${escapeHTML(subtitle)}</p>
 
-    <div class="route-endpoint-summary compact">
-      ${routeEndpointSummary()}
-    </div>
+    ${endpointSummaryBlock("route-endpoint-summary compact")}
 
     ${mobilityTypeSelectorMarkup()}
 
@@ -3650,9 +3647,7 @@ function showNearbyPlaceDetail(place) {
         <span>${escapeHTML(formatPlaceDistance(place))}</span>
         <span data-accessibility-detail>${escapeHTML(accessibilityLabel(place))}</span>
       </div>
-      <div class="route-endpoint-summary">
-        ${routeEndpointSummary()}
-      </div>
+      ${endpointSummaryBlock("route-endpoint-summary")}
       <div class="place-select-actions">
         <button class="secondary-btn" type="button" data-route-role="start">&#52636;&#48156;&#51648;&#47196;</button>
         <button class="primary-btn" type="button" data-route-role="end">&#47785;&#51201;&#51648;&#47196;</button>
@@ -3992,22 +3987,61 @@ function dangerZonesFromRoute(path) {
   return [...zones.values()];
 }
 
+// 위험 지점은 큰 원 대신 작은 경고 삼각형으로 표시하고, 누르면 왜 위험한지 보여준다.
+let dangerInfoWindow = null;
+
+function dangerTriangleImage(size = 26) {
+  const svg =
+    '<svg xmlns="http://www.w3.org/2000/svg" width="26" height="24" viewBox="0 0 26 24">' +
+    '<path d="M13 2 L24.5 22 H1.5 Z" fill="#ffd21f" stroke="#e53935" stroke-width="2.6" stroke-linejoin="round"/>' +
+    '<rect x="11.7" y="8.5" width="2.6" height="7" rx="1.2" fill="#222"/>' +
+    '<circle cx="13" cy="18.6" r="1.5" fill="#222"/></svg>';
+  return new kakao.maps.MarkerImage(
+    "data:image/svg+xml;charset=UTF-8," + encodeURIComponent(svg),
+    new kakao.maps.Size(size, Math.round((size * 24) / 26)),
+    { offset: new kakao.maps.Point(size / 2, Math.round((size * 22) / 26)) }
+  );
+}
+
+function dangerReasonHtml(zone) {
+  const reasons = Array.isArray(zone.reasons) && zone.reasons.length
+    ? zone.reasons
+    : [{ type: zone.type === "stair" ? "계단" : "위험 구간", detail: "" }];
+  const lines = reasons
+    .slice(0, 4)
+    .map((reason) => {
+      const text = [reason.type, reason.detail].filter(Boolean).join(" · ");
+      return `<div>• ${escapeHTML(text || "위험 구간")}</div>`;
+    })
+    .join("");
+  const count = Number(zone.reportCount) > 1 ? `<div style="color:#888">제보 ${Number(zone.reportCount)}건</div>` : "";
+  return `
+    <div style="padding:8px 10px; font-size:13px; line-height:1.5; max-width:220px;">
+      <strong>${escapeHTML(zone.name || "위험 구간")}</strong>
+      ${lines}${count}
+    </div>
+  `;
+}
+
 function drawDangerZones(zones) {
   clearDangerZones();
 
   zones.forEach((zone) => {
-    const circle = new kakao.maps.Circle({
-      center: new kakao.maps.LatLng(zone.lat, zone.lng),
-      radius: zone.radius || 25,
-      strokeWeight: 2,
-      strokeColor: "#ff4d4f",
-      strokeOpacity: 0.9,
-      fillColor: "#ff4d4f",
-      fillOpacity: 0.25,
+    const marker = new kakao.maps.Marker({
+      map,
+      position: new kakao.maps.LatLng(zone.lat, zone.lng),
+      image: dangerTriangleImage(),
+      title: zone.name || "위험 구간",
+      zIndex: 5,
     });
 
-    circle.setMap(map);
-    dangerCircles.push(circle);
+    kakao.maps.event.addListener(marker, "click", () => {
+      dangerInfoWindow?.close();
+      dangerInfoWindow = new kakao.maps.InfoWindow({ content: dangerReasonHtml(zone), removable: true });
+      dangerInfoWindow.open(map, marker);
+    });
+
+    dangerCircles.push(marker);
   });
 }
 
