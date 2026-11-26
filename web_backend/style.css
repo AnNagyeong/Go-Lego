@@ -3488,3 +3488,13 @@ body.pano-guide-on .bottom-sheet { bottom: calc(86px + var(--pano-guide-h) + 8px
 .pano-overlay button { padding: 6px 12px; border: 1px solid #666; border-radius: 6px; background: none; color: #fff; font-size: 13px; cursor: pointer; }
 .pano-overlay button:disabled { opacity: 0.35; cursor: default; }
 .pano-overlay-notice { position: absolute; left: 50%; bottom: 72px; transform: translateX(-50%); padding: 8px 18px; border-radius: 20px; background: rgba(0, 0, 0, 0.65); color: #ddd; font-size: 13px; pointer-events: none; }
+
+/* ===== Agent: 생각하는 중 표시 ===== */
+.agent-thinking { min-width:190px; }
+.agent-thinking-steps { display:flex; flex-direction:column; gap:6px; margin:0; padding:0; list-style:none; }
+.agent-thinking-steps li { color:#8a9199; font-size:12px; line-height:1.4; }
+.agent-thinking-steps li.done::before { content:"\2713\00a0"; color:#36a400; }
+.agent-thinking-steps li.active { color:#2b2f33; font-weight:700; }
+.agent-thinking-steps li.active::after { content:""; display:inline-block; width:6px; height:6px; margin-left:7px; border-radius:50%; background:#36d400; vertical-align:middle; animation:agentThinkingPulse 1s ease-in-out infinite; }
+@keyframes agentThinkingPulse { 0%,100% { opacity:.25; transform:scale(.8); } 50% { opacity:1; transform:scale(1.15); } }
+@media (prefers-reduced-motion:reduce) { .agent-thinking-steps li.active::after { animation:none; } }
